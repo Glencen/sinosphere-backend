@@ -9,12 +9,12 @@ class WordAdmin(admin.ModelAdmin):
 
 @admin.register(Dictionary)
 class DictionaryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'dictionary_type', 'is_public', 'created_at')
-    list_filter = ('dictionary_type', 'is_public')
-    search_fields = ('name', 'description')
+    list_display = ('name', 'dictionary_type')
+    list_filter = ('dictionary_type',)
+    search_fields = ('name',)
 
 @admin.register(DictionaryEntry)
 class DictionaryEntryAdmin(admin.ModelAdmin):
     list_display = ('dictionary', 'word', 'added_date')
-    list_filter = ('added_date')
+    list_filter = ('added_date',)
     search_fields = ('dictionary__name', 'word__simplified')
