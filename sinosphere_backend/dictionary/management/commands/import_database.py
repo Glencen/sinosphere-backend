@@ -2,7 +2,7 @@ import os
 import re
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from dictionary.models import Word, Dictionary, DictionaryEntry
+from dictionary.models import Word, DictionaryEntry
 from dictionary.utils import get_or_create_global_dictionary
 
 class Command(BaseCommand):
@@ -23,7 +23,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--batch-size',
             type=int,
-            default=500,
+            default=100,
             help='Размер батча для массового создания'
         )
     
@@ -42,6 +42,7 @@ class Command(BaseCommand):
         
         self.stdout.write(f'Начинаем импорт из: {file_path}')
         self.stdout.write(f'Глобальный словарь: {global_dict.name}')
+        self.stdout.write(f'Лимит: {limit if limit else "нет"}, Размер батча: {batch_size}')
         
         imported_count = 0
         skipped_count = 0
@@ -57,16 +58,24 @@ class Command(BaseCommand):
                     word_data = self.parse_line(line)
                     if word_data:
                         word_data_batch.append(word_data)
-                        
-                        if len(word_data_batch) >= batch_size:
-                            created_count = self.process_batch(word_data_batch, global_dict)
-                            imported_count += created_count
-                            word_data_batch = []
-                            self.stdout.write(f'Импортировано: {imported_count} слов...')
-                        
-                        if limit and imported_count >= limit:
-                            break
+
+                        if len(word_data_batch) >= batch_size or (limit and imported_count + len(word_data_batch) >= limit):
+                            batch_to_process = word_data_batch
                             
+                            if limit and imported_count + len(batch_to_process) > limit:
+                                remaining = limit - imported_count
+                                batch_to_process = word_data_batch[:remaining]
+                                word_data_batch = word_data_batch[remaining:]
+                            else:
+                                word_data_batch = []
+                            
+                            created_count = self.process_batch(batch_to_process, global_dict)
+                            imported_count += created_count
+                            self.stdout.write(f'Импортировано: {imported_count} слов...')
+                            
+                            if limit and imported_count >= limit:
+                                break
+                        
                 except Exception as e:
                     self.stdout.write(
                         self.style.WARNING(f'Ошибка в строке {line_num}: {e}')
@@ -74,7 +83,11 @@ class Command(BaseCommand):
                     skipped_count += 1
                     continue
             
-            if word_data_batch:
+            if word_data_batch and (not limit or imported_count < limit):
+                if limit and imported_count + len(word_data_batch) > limit:
+                    remaining = limit - imported_count
+                    word_data_batch = word_data_batch[:remaining]
+                
                 created_count = self.process_batch(word_data_batch, global_dict)
                 imported_count += created_count
         
@@ -93,7 +106,9 @@ class Command(BaseCommand):
             return None
         
         traditional, simplified, pinyin, translation = match.groups()
-        clean_translation = self.clean_translation(translation)
+        translations = translation.split('/')
+        translations = [t.strip() for t in translations if t.strip()]
+        clean_translation = '; '.join(translations)
         
         return {
             'traditional': traditional,
@@ -101,11 +116,6 @@ class Command(BaseCommand):
             'pinyin': pinyin,
             'translation': clean_translation,
         }
-    
-    def clean_translation(self, translation):
-        translations = translation.split('/')
-        translations = [t.strip() for t in translations if t.strip()]
-        return '; '.join(translations)
     
     def process_batch(self, word_data_batch, global_dict):
         created_count = 0
@@ -133,9 +143,6 @@ class Command(BaseCommand):
                     ).first()
                     
                     if not word:
-                        self.stdout.write(
-                            self.style.WARNING(f'Слово не найдено: {word_data["simplified"]} {word_data["pinyin"]}')
-                        )
                         continue
                     
                     if not DictionaryEntry.objects.filter(
@@ -148,9 +155,6 @@ class Command(BaseCommand):
                         )
                         
                 except Exception as e:
-                    self.stdout.write(
-                        self.style.WARNING(f'Ошибка при добавлении слова в словарь: {e}')
-                    )
                     continue
         
         return created_count
