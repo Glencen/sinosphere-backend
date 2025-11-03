@@ -10,6 +10,11 @@ class Word(models.Model):
     class Meta:
         verbose_name = 'Слово'
         verbose_name_plural = 'Слова'
+        indexes = [
+            models.Index(fields=['simplified']),
+            models.Index(fields=['traditional']),
+            models.Index(fields=['pinyin']),
+        ]
     
     def __str__(self):
         return f"{self.simplified} ({self.pinyin})"
