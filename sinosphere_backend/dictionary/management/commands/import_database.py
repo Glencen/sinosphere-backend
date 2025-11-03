@@ -6,7 +6,7 @@ from dictionary.models import Word, Dictionary, DictionaryEntry
 from dictionary.utils import get_or_create_global_dictionary
 
 class Command(BaseCommand):
-    help = 'Импортирует словарь в формате CC-CEDICT в базу данных'
+    help = 'Импортирует словарь CC-CEDICT в базу данных'
     
     def add_arguments(self, parser):
         parser.add_argument(
@@ -23,7 +23,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--batch-size',
             type=int,
-            default=1000,
+            default=500,
             help='Размер батча для массового создания'
         )
     
@@ -47,8 +47,7 @@ class Command(BaseCommand):
         skipped_count = 0
         
         with open(file_path, 'r', encoding='utf-8') as file:
-            words_to_create = []
-            entries_to_create = []
+            word_data_batch = []
             
             for line_num, line in enumerate(file, 1):
                 if line.startswith('#') or not line.strip():
@@ -57,20 +56,12 @@ class Command(BaseCommand):
                 try:
                     word_data = self.parse_line(line)
                     if word_data:
-                        word = Word(**word_data)
-                        words_to_create.append(word)
-                        entries_to_create.append(
-                            DictionaryEntry(dictionary=global_dict, word=word)
-                        )
+                        word_data_batch.append(word_data)
                         
-                        if len(words_to_create) >= batch_size:
-                            created_count = self.bulk_create_words_and_entries(
-                                words_to_create, entries_to_create
-                            )
+                        if len(word_data_batch) >= batch_size:
+                            created_count = self.process_batch(word_data_batch, global_dict)
                             imported_count += created_count
-                            words_to_create = []
-                            entries_to_create = []
-                            
+                            word_data_batch = []
                             self.stdout.write(f'Импортировано: {imported_count} слов...')
                         
                         if limit and imported_count >= limit:
@@ -83,10 +74,8 @@ class Command(BaseCommand):
                     skipped_count += 1
                     continue
             
-            if words_to_create:
-                created_count = self.bulk_create_words_and_entries(
-                    words_to_create, entries_to_create
-                )
+            if word_data_batch:
+                created_count = self.process_batch(word_data_batch, global_dict)
                 imported_count += created_count
         
         self.stdout.write(
@@ -118,8 +107,34 @@ class Command(BaseCommand):
         translations = [t.strip() for t in translations if t.strip()]
         return '; '.join(translations)
     
-    def bulk_create_words_and_entries(self, words, entries):
+    def process_batch(self, word_data_batch, global_dict):
+        created_count = 0
+        
         with transaction.atomic():
-            created_words = Word.objects.bulk_create(words, ignore_conflicts=True)
-            DictionaryEntry.objects.bulk_create(entries, ignore_conflicts=True)
-            return len(created_words)
+            new_words = []
+            for word_data in word_data_batch:
+                if not Word.objects.filter(
+                    simplified=word_data['simplified'],
+                    pinyin=word_data['pinyin']
+                ).exists():
+                    new_words.append(Word(**word_data))
+            
+            if new_words:
+                Word.objects.bulk_create(new_words)
+                created_count += len(new_words)
+            
+            for word_data in word_data_batch:
+                word = Word.objects.get(
+                    simplified=word_data['simplified'],
+                    pinyin=word_data['pinyin']
+                )
+                if not DictionaryEntry.objects.filter(
+                    dictionary=global_dict,
+                    word=word
+                ).exists():
+                    DictionaryEntry.objects.create(
+                        dictionary=global_dict,
+                        word=word
+                    )
+        
+        return created_count
