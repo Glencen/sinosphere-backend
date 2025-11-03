@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.exceptions import ValidationError
 
 class Word(models.Model):
     traditional = models.CharField(max_length=10, verbose_name="Традиционный")
@@ -30,6 +31,21 @@ class Dictionary(models.Model):
         verbose_name = 'Словарь'
         verbose_name_plural = 'Словари'
     
+    def clean(self):
+        if self.dictionary_type == 'global':
+            existing_global = Dictionary.objects.filter(
+                dictionary_type='global'
+            ).exclude(pk=self.pk)
+            
+            if existing_global.exists():
+                raise ValidationError({
+                    'dictionary_type': 'Может существовать только один глобальный словарь'
+                })
+    
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+    
     def __str__(self):
         return self.name
 
@@ -54,3 +70,12 @@ class DictionaryEntry(models.Model):
     
     def __str__(self):
         return f"{self.dictionary.name} - {self.word.simplified}"
+    
+def ensure_global_dictionary_exists():
+    from django.db import transaction
+    with transaction.atomic():
+        if not Dictionary.objects.filter(dictionary_type='global').exists():
+            Dictionary.objects.create(
+                name='Глобальный словарь',
+                dictionary_type='global'
+            )
