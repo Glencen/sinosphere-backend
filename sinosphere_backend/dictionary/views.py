@@ -25,7 +25,7 @@ class WordSearchView(generics.ListAPIView):
     serializer_class = WordSerializer
     
     def get_queryset(self):
-        query = self.request.GET.get('q', '')
+        query = self.request.GET.get('q', '').strip()
         return Word.objects.filter(
             Q(simplified__icontains=query) |
             Q(traditional__icontains=query) |
