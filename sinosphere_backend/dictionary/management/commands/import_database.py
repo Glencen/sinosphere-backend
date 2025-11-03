@@ -113,10 +113,12 @@ class Command(BaseCommand):
         with transaction.atomic():
             new_words = []
             for word_data in word_data_batch:
-                if not Word.objects.filter(
+                existing_words = Word.objects.filter(
                     simplified=word_data['simplified'],
                     pinyin=word_data['pinyin']
-                ).exists():
+                )
+                
+                if not existing_words.exists():
                     new_words.append(Word(**word_data))
             
             if new_words:
@@ -124,17 +126,31 @@ class Command(BaseCommand):
                 created_count += len(new_words)
             
             for word_data in word_data_batch:
-                word = Word.objects.get(
-                    simplified=word_data['simplified'],
-                    pinyin=word_data['pinyin']
-                )
-                if not DictionaryEntry.objects.filter(
-                    dictionary=global_dict,
-                    word=word
-                ).exists():
-                    DictionaryEntry.objects.create(
+                try:
+                    word = Word.objects.filter(
+                        simplified=word_data['simplified'],
+                        pinyin=word_data['pinyin']
+                    ).first()
+                    
+                    if not word:
+                        self.stdout.write(
+                            self.style.WARNING(f'Слово не найдено: {word_data["simplified"]} {word_data["pinyin"]}')
+                        )
+                        continue
+                    
+                    if not DictionaryEntry.objects.filter(
                         dictionary=global_dict,
                         word=word
+                    ).exists():
+                        DictionaryEntry.objects.create(
+                            dictionary=global_dict,
+                            word=word
+                        )
+                        
+                except Exception as e:
+                    self.stdout.write(
+                        self.style.WARNING(f'Ошибка при добавлении слова в словарь: {e}')
                     )
+                    continue
         
         return created_count
