@@ -29,12 +29,16 @@ class WordSearchView(generics.ListAPIView):
         if not query:
             return Word.objects.none()
         
+        import re
+        clean_query = re.sub(r'[1-5]', '', query)
+        
         return Word.objects.filter(
             Q(simplified__icontains=query) |
             Q(traditional__icontains=query) |
             Q(pinyin__icontains=query) |
-            Q(translation__icontains=query)
-        )
+            Q(translation__icontains=query) |
+            Q(pinyin__icontains=clean_query)
+        ).distinct()[:100]
 
 class AddToPersonalDictionaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
