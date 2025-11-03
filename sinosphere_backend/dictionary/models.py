@@ -45,6 +45,11 @@ class Dictionary(models.Model):
     def save(self, *args, **kwargs):
         self.clean()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.dictionary_type == 'global':
+            raise ValidationError("Нельзя удалить глобальный словарь")
+        super().delete(*args, **kwargs)
     
     def __str__(self):
         return self.name
