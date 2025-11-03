@@ -26,6 +26,9 @@ class WordSearchView(generics.ListAPIView):
     
     def get_queryset(self):
         query = self.request.GET.get('q', '').strip()
+        if not query:
+            return Word.objects.none()
+        
         return Word.objects.filter(
             Q(simplified__icontains=query) |
             Q(traditional__icontains=query) |
