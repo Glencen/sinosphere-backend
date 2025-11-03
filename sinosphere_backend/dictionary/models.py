@@ -2,9 +2,9 @@ from django.db import models
 from django.core.exceptions import ValidationError
 
 class Word(models.Model):
-    traditional = models.CharField(max_length=10, verbose_name="Традиционный")
-    simplified = models.CharField(max_length=10, verbose_name="Упрощенный")
-    pinyin = models.CharField(max_length=50, verbose_name="Пиньинь")
+    traditional = models.CharField(max_length=20, verbose_name="Традиционный")
+    simplified = models.CharField(max_length=20, verbose_name="Упрощенный")
+    pinyin = models.CharField(max_length=255, verbose_name="Пиньинь")
     translation = models.TextField(verbose_name="Перевод")
     
     class Meta:
