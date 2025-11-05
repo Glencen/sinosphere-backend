@@ -9,8 +9,7 @@ def create_user_profile_and_dictionary(sender, instance, created, **kwargs):
     if created:
         personal_dict = Dictionary.objects.create(
             name=f"Личный словарь {instance.username}",
-            dictionary_type='user',
-            description=f"Персональный словарь пользователя {instance.username}"
+            dictionary_type='user'
         )
         UserProfile.objects.create(
             user=instance,
