@@ -1,4 +1,3 @@
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from .models import Dictionary, Word, DictionaryEntry
 
 def get_or_create_global_dictionary():
