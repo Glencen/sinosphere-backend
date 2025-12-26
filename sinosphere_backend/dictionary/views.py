@@ -10,7 +10,6 @@ from .serializers import (
     BulkWordCompositionSerializer
 )
 
-
 class WordListCreateView(APIView):
     """
     API для получения списка слов и создания нового слова

@@ -234,8 +234,8 @@ class WordPartOfSpeechSerializer(serializers.ModelSerializer):
 class WordSerializer(serializers.ModelSerializer):
     tags = WordTagSerializer(many=True, read_only=True, source='wordtags')
     parts_of_speech = WordPartOfSpeechSerializer(many=True, read_only=True, source='wordpartsofspeech')
-    as_child = WordCompositionSerializer(many=True, read_only=True)
-    parent_words = WordCompositionSerializer(many=True, read_only=True)
+    components = WordCompositionSerializer(many=True, read_only=True)
+    used_in_words = WordCompositionSerializer(many=True, read_only=True)
     
     tag_names = serializers.ListField(
         child=serializers.CharField(),
@@ -253,7 +253,7 @@ class WordSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'hanzi', 'pinyin_numeric', 'pinyin_graphic', 
             'translation', 'difficulty', 'tags', 'parts_of_speech',
-            'as_child', 'parent_words', 'tag_names', 'part_of_speech_names'
+            'components', 'used_in_words', 'tag_names', 'part_of_speech_names'
         ]
     
     @transaction.atomic

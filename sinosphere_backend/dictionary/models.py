@@ -23,12 +23,12 @@ class WordComposition(models.Model):
     child_word = models.ForeignKey(
         Word,
         on_delete=models.CASCADE,
-        related_name='as_child'
+        related_name='components'
     )
     parent_word = models.ForeignKey(
         Word,
         on_delete=models.CASCADE,
-        related_name='parent_words'
+        related_name='used_in_words'
     )
     position = models.PositiveSmallIntegerField(
         default=1,

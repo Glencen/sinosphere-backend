@@ -23,11 +23,11 @@ urlpatterns = [
     path('word-parts-of-speech/', views.WordPartOfSpeechListCreateView.as_view(), name='word-pos-list-create'),
     path('word-parts-of-speech/<int:pk>/', views.WordPartOfSpeechDetailView.as_view(), name='word-pos-detail'),
     
-    # Тэги (справочник) - ТЕПЕРЬ С ВОЗМОЖНОСТЬЮ ИЗМЕНЕНИЯ
+    # Тэги
     path('tags/', views.TagListView.as_view(), name='tag-list'),
     path('tags/<str:name>/', views.TagDetailView.as_view(), name='tag-detail'),
     
-    # Части речи (справочник) - ТЕПЕРЬ С ВОЗМОЖНОСТЬЮ ИЗМЕНЕНИЯ
+    # Части речи
     path('parts-of-speech/', views.PartOfSpeechListView.as_view(), name='part-of-speech-list'),
     path('parts-of-speech/<str:name>/', views.PartOfSpeechDetailView.as_view(), name='part-of-speech-detail'),
 ]
