@@ -6,7 +6,8 @@ from django.db import transaction
 from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech
 from .serializers import (
     WordSerializer, WordCompositionSerializer, TagSerializer, 
-    PartOfSpeechSerializer, WordTagSerializer, WordPartOfSpeechSerializer
+    PartOfSpeechSerializer, WordTagSerializer, WordPartOfSpeechSerializer,
+    BulkWordCompositionSerializer
 )
 
 
@@ -59,7 +60,6 @@ class WordDetailView(APIView):
         word.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-
 class WordCompositionListCreateView(APIView):
     """
     API для управления композициями слов
@@ -71,12 +71,30 @@ class WordCompositionListCreateView(APIView):
         return Response(serializer.data)
     
     def post(self, request):
-        serializer = WordCompositionSerializer(data=request.data)
+        if 'child_word_hanzi' in request.data and 'compositions' in request.data:
+            serializer = BulkWordCompositionSerializer(data=request.data)
+        else:
+            serializer = WordCompositionSerializer(data=request.data)
+        
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+class BulkWordCompositionCreateView(APIView):
+    """
+    API для массового создания композиций слов
+    """
+    
+    def post(self, request):
+        serializer = BulkWordCompositionSerializer(data=request.data)
+        if serializer.is_valid():
+            compositions = serializer.save()
+            return Response(
+                WordCompositionSerializer(compositions, many=True).data,
+                status=status.HTTP_201_CREATED
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class WordCompositionDetailView(APIView):
     """

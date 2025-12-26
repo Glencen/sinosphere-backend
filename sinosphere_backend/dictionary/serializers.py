@@ -13,27 +13,197 @@ class PartOfSpeechSerializer(serializers.ModelSerializer):
         fields = ['name']
 
 class WordCompositionSerializer(serializers.ModelSerializer):
-    child_word_id = serializers.PrimaryKeyRelatedField(
-        queryset=Word.objects.all(),
-        source='child_word',
-        write_only=True
-    )
-    parent_word_id = serializers.PrimaryKeyRelatedField(
-        queryset=Word.objects.all(),
-        source='parent_word',
-        write_only=True
-    )
+    child_word_hanzi = serializers.CharField(write_only=True, required=True)
+    parent_word_hanzi = serializers.CharField(write_only=True, required=True)
     
-    child_word_hanzi = serializers.CharField(source='child_word.hanzi', read_only=True)
-    parent_word_hanzi = serializers.CharField(source='parent_word.hanzi', read_only=True)
+    child_word_display = serializers.CharField(source='child_word.hanzi', read_only=True)
+    parent_word_display = serializers.CharField(source='parent_word.hanzi', read_only=True)
+    child_word_id = serializers.IntegerField(source='child_word.id', read_only=True)
+    parent_word_id = serializers.IntegerField(source='parent_word.id', read_only=True)
     
     class Meta:
         model = WordComposition
         fields = [
-            'id', 'child_word_id', 'parent_word_id', 
-            'position', 'child_word_hanzi', 'parent_word_hanzi'
+            'id', 'child_word_hanzi', 'parent_word_hanzi', 'position',
+            'child_word_display', 'parent_word_display', 'child_word_id', 'parent_word_id'
         ]
+        read_only_fields = ['child_word_display', 'parent_word_display', 'child_word_id', 'parent_word_id']
+    
+    def validate_parent_word_hanzi(self, value):
+        if len(value) > 1:
+            raise serializers.ValidationError(
+                "Родительское слово должно содержать только один иероглиф"
+            )
+        return value
+    
+    def validate(self, data):
+        child_word_hanzi = data.get('child_word_hanzi')
+        parent_word_hanzi = data.get('parent_word_hanzi')
+        position = data.get('position')
+        
+        child_word, _ = Word.objects.get_or_create(
+            hanzi=child_word_hanzi,
+            defaults={
+                'pinyin_numeric': '',
+                'pinyin_graphic': '',
+                'translation': '',
+                'difficulty': 0
+            }
+        )
+        
+        parent_word, _ = Word.objects.get_or_create(
+            hanzi=parent_word_hanzi,
+            defaults={
+                'pinyin_numeric': '',
+                'pinyin_graphic': '',
+                'translation': '',
+                'difficulty': 0
+            }
+        )
+        
+        if position > len(child_word.hanzi):
+            raise serializers.ValidationError({
+                'position': f"Позиция {position} превышает длину слова '{child_word.hanzi}'"
+            })
+        
+        expected_hanzi = child_word.hanzi[position - 1]
+        if parent_word.hanzi != expected_hanzi:
+            raise serializers.ValidationError({
+                'parent_word_hanzi': (
+                    f"Иероглиф '{parent_word.hanzi}' не совпадает с иероглифом "
+                    f"'{expected_hanzi}' на позиции {position} в слове '{child_word.hanzi}'"
+                )
+            })
+        
+        if WordComposition.objects.filter(
+            child_word=child_word, position=position
+        ).exists():
+            if self.instance is None or self.instance.position != position:
+                raise serializers.ValidationError({
+                    'position': f"Позиция {position} уже занята для слова '{child_word.hanzi}'"
+                })
+        
+        data['child_word'] = child_word
+        data['parent_word'] = parent_word
+        
+        return data
+    
+    def create(self, validated_data):
+        validated_data.pop('child_word_hanzi', None)
+        validated_data.pop('parent_word_hanzi', None)
+        
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        validated_data.pop('child_word_hanzi', None)
+        validated_data.pop('parent_word_hanzi', None)
+        
+        return super().update(instance, validated_data)
 
+
+class BulkWordCompositionSerializer(serializers.Serializer):
+    child_word_hanzi = serializers.CharField(required=True)
+    compositions = serializers.ListField(
+        child=serializers.DictField(),
+        required=True
+    )
+    
+    def validate_compositions(self, value):
+        if not value:
+            raise serializers.ValidationError("Список композиций не может быть пустым")
+        
+        for comp in value:
+            if 'parent_word_hanzi' not in comp or 'position' not in comp:
+                raise serializers.ValidationError(
+                    "Каждая композиция должна содержать 'parent_word_hanzi' и 'position'"
+                )
+            
+            if len(comp['parent_word_hanzi']) > 1:
+                raise serializers.ValidationError(
+                    f"Родительское слово '{comp['parent_word_hanzi']}' должно содержать только один иероглиф"
+                )
+        
+        parent_words = [comp['parent_word_hanzi'] for comp in value]
+        positions = [comp['position'] for comp in value]
+        
+        if len(parent_words) != len(positions):
+            raise serializers.ValidationError(
+                "Количество parent_word и position должно быть одинаковым"
+            )
+        
+        if len(positions) != len(set(positions)):
+            raise serializers.ValidationError(
+                "Позиции должны быть уникальными"
+            )
+        
+        return value
+    
+    def validate(self, data):
+        child_word_hanzi = data['child_word_hanzi']
+        compositions = data['compositions']
+        child_word, _ = Word.objects.get_or_create(
+            hanzi=child_word_hanzi,
+            defaults={
+                'pinyin_numeric': '',
+                'pinyin_graphic': '',
+                'translation': '',
+                'difficulty': 0
+            }
+        )
+        
+        for comp in compositions:
+            parent_word_hanzi = comp['parent_word_hanzi']
+            position = comp['position']
+            
+            if position > len(child_word.hanzi):
+                raise serializers.ValidationError({
+                    'compositions': f"Позиция {position} превышает длину слова '{child_word.hanzi}'"
+                })
+            
+            expected_hanzi = child_word.hanzi[position - 1]
+            if parent_word_hanzi != expected_hanzi:
+                raise serializers.ValidationError({
+                    'compositions': (
+                        f"Иероглиф '{parent_word_hanzi}' не совпадает с иероглифом "
+                        f"'{expected_hanzi}' на позиции {position} в слове '{child_word.hanzi}'"
+                    )
+                })
+            
+            parent_word, _ = Word.objects.get_or_create(
+                hanzi=parent_word_hanzi,
+                defaults={
+                    'pinyin_numeric': '',
+                    'pinyin_graphic': '',
+                    'translation': '',
+                    'difficulty': 0
+                }
+            )
+            
+            comp['child_word'] = child_word
+            comp['parent_word'] = parent_word
+        
+        return data
+    
+    def create(self, validated_data):
+        compositions_data = validated_data.pop('compositions')
+        created_compositions = []
+        
+        with transaction.atomic():
+            child_word = compositions_data[0]['child_word']
+            WordComposition.objects.filter(child_word=child_word).delete()
+            
+            for comp_data in compositions_data:
+                composition = WordComposition.objects.create(
+                    child_word=comp_data['child_word'],
+                    parent_word=comp_data['parent_word'],
+                    position=comp_data['position']
+                )
+                created_compositions.append(composition)
+        
+        return created_compositions
+    
+    def to_representation(self, instance):
+        return WordCompositionSerializer(instance, many=True).data
 
 class WordTagSerializer(serializers.ModelSerializer):
     word_id = serializers.PrimaryKeyRelatedField(

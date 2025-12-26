@@ -22,17 +22,17 @@ class Word(models.Model):
 class WordComposition(models.Model):
     child_word = models.ForeignKey(
         Word,
-        on_delete = models.CASCADE,
-        related_name = 'as_child'
+        on_delete=models.CASCADE,
+        related_name='as_child'
     )
     parent_word = models.ForeignKey(
         Word,
-        on_delete = models.CASCADE,
-        related_name = 'parent_words'
+        on_delete=models.CASCADE,
+        related_name='parent_words'
     )
     position = models.PositiveSmallIntegerField(
         default=1,
-        help_text = 'Позиция parent_word в child_word'
+        help_text='Позиция parent_word в child_word'
     )
 
     class Meta:
@@ -48,6 +48,25 @@ class WordComposition(models.Model):
 
         if self.parent_word == self.child_word:
             raise ValidationError("Слово не может быть компонентом самого себя")
+        
+        if len(self.parent_word.hanzi) > 1:
+            raise ValidationError("Родительское слово должно содержать только один иероглиф")
+        
+        if self.position > len(self.child_word.hanzi):
+            raise ValidationError(
+                f"Позиция {self.position} превышает длину слова '{self.child_word.hanzi}'"
+            )
+        
+        expected_hanzi = self.child_word.hanzi[self.position - 1]
+        if self.parent_word.hanzi != expected_hanzi:
+            raise ValidationError(
+                f"Иероглиф '{self.parent_word.hanzi}' не совпадает с иероглифом "
+                f"'{expected_hanzi}' на позиции {self.position} в слове '{self.child_word.hanzi}'"
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Слово {self.child_word} содержит слово {self.parent_word} (позиция: {self.position})"

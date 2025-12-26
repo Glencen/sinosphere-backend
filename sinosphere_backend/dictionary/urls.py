@@ -12,6 +12,7 @@ urlpatterns = [
     
     # Композиции слов
     path('word-compositions/', views.WordCompositionListCreateView.as_view(), name='word-composition-list-create'),
+    path('word-compositions/bulk/', views.BulkWordCompositionCreateView.as_view(), name='word-composition-bulk-create'),
     path('word-compositions/<int:pk>/', views.WordCompositionDetailView.as_view(), name='word-composition-detail'),
     
     # Теги слов
