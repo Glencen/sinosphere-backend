@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from .models import UserProfile, UserWord
@@ -32,11 +32,12 @@ class RegisterView(APIView):
             
             UserProfile.objects.create(user=user)
             
-            token, created = Token.objects.get_or_create(user=user)
+            refresh = RefreshToken.for_user(user)
             
             return Response({
                 'user': serializer.data,
-                'token': token.key,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
                 'message': 'Пользователь успешно зарегистрирован'
             }, status=status.HTTP_201_CREATED)
         
@@ -62,9 +63,11 @@ class LoginView(APIView):
         user = authenticate(username=username, password=password)
         
         if user:
-            token, created = Token.objects.get_or_create(user=user)
+            refresh = RefreshToken.for_user(user)
+            
             return Response({
-                'token': token.key,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
                 'user_id': user.id,
                 'username': user.username,
                 'email': user.email
@@ -84,14 +87,41 @@ class LogoutView(APIView):
     
     def post(self, request):
         try:
-            request.user.auth_token.delete()
-            return Response({'message': 'Успешный выход из системы'})
-        except Token.DoesNotExist:
+            return Response({
+                'message': 'Успешный выход из системы. Удалите токены на клиенте.'
+            })
+        except Exception as e:
             return Response(
-                {'error': 'Токен не найден'},
+                {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+
+class TokenRefreshView(APIView):
+    """
+    Обновление access токена с помощью refresh токена
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        refresh_token = request.data.get('refresh')
+        
+        if not refresh_token:
+            return Response(
+                {'error': 'Refresh токен не предоставлен'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            refresh = RefreshToken(refresh_token)
+            return Response({
+                'access': str(refresh.access_token),
+            })
+        except Exception as e:
+            return Response(
+                {'error': 'Недействительный refresh токен'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
 class UserProfileView(APIView):
     """
