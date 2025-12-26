@@ -61,18 +61,9 @@ class WordCompositionSerializer(serializers.ModelSerializer):
             }
         )
         
-        if position > len(child_word.hanzi):
+        if (len(child_word.hanzi) > 1) and (position > len(child_word.hanzi)):
             raise serializers.ValidationError({
-                'position': f"Позиция {position} превышает длину слова '{child_word.hanzi}'"
-            })
-        
-        expected_hanzi = child_word.hanzi[position - 1]
-        if parent_word.hanzi != expected_hanzi:
-            raise serializers.ValidationError({
-                'parent_word_hanzi': (
-                    f"Иероглиф '{parent_word.hanzi}' не совпадает с иероглифом "
-                    f"'{expected_hanzi}' на позиции {position} в слове '{child_word.hanzi}'"
-                )
+                'position': f"Позиция {position} превышает длину слова '{child_word}'"
             })
         
         if WordComposition.objects.filter(
@@ -80,7 +71,7 @@ class WordCompositionSerializer(serializers.ModelSerializer):
         ).exists():
             if self.instance is None or self.instance.position != position:
                 raise serializers.ValidationError({
-                    'position': f"Позиция {position} уже занята для слова '{child_word.hanzi}'"
+                    'position': f"Позиция {position} уже занята для слова '{child_word}'"
                 })
         
         data['child_word'] = child_word
@@ -151,22 +142,21 @@ class BulkWordCompositionSerializer(serializers.Serializer):
             }
         )
         
+        positions = set()
+        
         for comp in compositions:
             parent_word_hanzi = comp['parent_word_hanzi']
             position = comp['position']
             
-            if position > len(child_word.hanzi):
+            if position in positions:
+                raise serializers.ValidationError({
+                    'compositions': f"Позиция {position} указана несколько раз"
+                })
+            positions.add(position)
+            
+            if (len(child_word.hanzi) > 1) and (position > len(child_word.hanzi)):
                 raise serializers.ValidationError({
                     'compositions': f"Позиция {position} превышает длину слова '{child_word.hanzi}'"
-                })
-            
-            expected_hanzi = child_word.hanzi[position - 1]
-            if parent_word_hanzi != expected_hanzi:
-                raise serializers.ValidationError({
-                    'compositions': (
-                        f"Иероглиф '{parent_word_hanzi}' не совпадает с иероглифом "
-                        f"'{expected_hanzi}' на позиции {position} в слове '{child_word.hanzi}'"
-                    )
                 })
             
             parent_word, _ = Word.objects.get_or_create(

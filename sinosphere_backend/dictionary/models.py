@@ -51,18 +51,6 @@ class WordComposition(models.Model):
         
         if len(self.parent_word.hanzi) > 1:
             raise ValidationError("Родительское слово должно содержать только один иероглиф")
-        
-        if self.position > len(self.child_word.hanzi):
-            raise ValidationError(
-                f"Позиция {self.position} превышает длину слова '{self.child_word.hanzi}'"
-            )
-        
-        expected_hanzi = self.child_word.hanzi[self.position - 1]
-        if self.parent_word.hanzi != expected_hanzi:
-            raise ValidationError(
-                f"Иероглиф '{self.parent_word.hanzi}' не совпадает с иероглифом "
-                f"'{expected_hanzi}' на позиции {self.position} в слове '{self.child_word.hanzi}'"
-            )
 
     def save(self, *args, **kwargs):
         self.full_clean()
