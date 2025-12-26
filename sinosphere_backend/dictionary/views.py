@@ -2,7 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from django.db import transaction
+from django.db.models import Q
 from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech
 from .serializers import (
     WordSerializer, WordCompositionSerializer, TagSerializer, 
@@ -296,17 +296,16 @@ class WordSearchView(APIView):
         
         queryset = Word.objects.all()
         
-        # Фильтрация по иероглифам
-        hanzi = query_params.get('hanzi')
-        if hanzi:
-            queryset = queryset.filter(hanzi__icontains=hanzi)
+        search_query = query_params.get('q')
         
-        # Фильтрация по пиньиню (числовое представление)
-        pinyin_numeric = query_params.get('pinyin_numeric')
-        if pinyin_numeric:
-            queryset = queryset.filter(pinyin_numeric__icontains=pinyin_numeric)
+        if search_query:
+            queryset = queryset.filter(
+                Q(hanzi__icontains=search_query) |
+                Q(pinyin_numeric__icontains=search_query) |
+                Q(pinyin_graphic__icontains=search_query) |
+                Q(translation__icontains=search_query)
+            )
         
-        # Фильтрация по сложности (HSK)
         difficulty = query_params.get('difficulty')
         if difficulty:
             queryset = queryset.filter(difficulty=difficulty)
