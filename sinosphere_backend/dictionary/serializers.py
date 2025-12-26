@@ -292,3 +292,18 @@ class WordSerializer(serializers.ModelSerializer):
         for pos_name in part_of_speech_names:
             pos, created = PartOfSpeech.objects.get_or_create(name=pos_name)
             WordPartOfSpeech.objects.create(word=word, part_of_speech=pos)
+
+class WordTagsSerializer(serializers.ModelSerializer):
+    tag_name = serializers.CharField(source='tag.name')
+    
+    class Meta:
+        model = WordTag
+        fields = ['id', 'tag_name']
+
+
+class WordPartsOfSpeechSerializer(serializers.ModelSerializer):
+    part_of_speech_name = serializers.CharField(source='part_of_speech.name')
+    
+    class Meta:
+        model = WordPartOfSpeech
+        fields = ['id', 'part_of_speech_name']

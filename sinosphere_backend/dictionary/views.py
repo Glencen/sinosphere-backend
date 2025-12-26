@@ -7,7 +7,7 @@ from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartO
 from .serializers import (
     WordSerializer, WordCompositionSerializer, TagSerializer, 
     PartOfSpeechSerializer, WordTagSerializer, WordPartOfSpeechSerializer,
-    BulkWordCompositionSerializer
+    BulkWordCompositionSerializer, WordTagsSerializer, WordPartsOfSpeechSerializer
 )
 
 class WordListCreateView(APIView):
@@ -316,3 +316,98 @@ class WordByDifficultyView(APIView):
         words = Word.objects.filter(difficulty=difficulty)
         serializer = WordSerializer(words, many=True)
         return Response(serializer.data)
+    
+class WordTagsView(APIView):
+    """
+    API для получения всех тэгов конкретного слова
+    """
+    def get(self, request, word_id):
+        word = get_object_or_404(Word, pk=word_id)
+        word_tags = word.tags.all()
+        serializer = WordTagsSerializer(word_tags, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request, word_id):
+        word = get_object_or_404(Word, pk=word_id)
+        
+        tag_name = request.data.get('tag_name')
+        if not tag_name:
+            return Response(
+                {'error': 'Поле "tag_name" обязательно'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        tag, created = Tag.objects.get_or_create(name=tag_name)
+        
+        if WordTag.objects.filter(word=word, tag=tag).exists():
+            return Response(
+                {'error': f'Тэг "{tag_name}" уже добавлен к этому слову'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        word_tag = WordTag.objects.create(word=word, tag=tag)
+        serializer = WordTagsSerializer(word_tag)
+        
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WordTagDetailByWordView(APIView):
+    """
+    API для удаления конкретного тэга у слова
+    """
+    def delete(self, request, word_id, tag_name):
+        word = get_object_or_404(Word, pk=word_id)
+        tag = get_object_or_404(Tag, name=tag_name)
+        
+        word_tag = get_object_or_404(WordTag, word=word, tag=tag)
+        word_tag.delete()
+        
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WordPartsOfSpeechView(APIView):
+    """
+    API для получения всех частей речи конкретного слова
+    """
+    def get(self, request, word_id):
+        word = get_object_or_404(Word, pk=word_id)
+        word_pos = word.parts_of_speech.all()
+        serializer = WordPartsOfSpeechSerializer(word_pos, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request, word_id):
+        word = get_object_or_404(Word, pk=word_id)
+        
+        pos_name = request.data.get('part_of_speech_name')
+        if not pos_name:
+            return Response(
+                {'error': 'Поле "part_of_speech_name" обязательно'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        part_of_speech, created = PartOfSpeech.objects.get_or_create(name=pos_name)
+        
+        if WordPartOfSpeech.objects.filter(word=word, part_of_speech=part_of_speech).exists():
+            return Response(
+                {'error': f'Часть речи "{pos_name}" уже добавлена к этому слову'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        word_pos = WordPartOfSpeech.objects.create(word=word, part_of_speech=part_of_speech)
+        serializer = WordPartsOfSpeechSerializer(word_pos)
+        
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WordPartOfSpeechDetailByWordView(APIView):
+    """
+    API для удаления конкретной части речи у слова
+    """
+    def delete(self, request, word_id, pos_name):
+        word = get_object_or_404(Word, pk=word_id)
+        part_of_speech = get_object_or_404(PartOfSpeech, name=pos_name)
+        
+        word_pos = get_object_or_404(WordPartOfSpeech, word=word, part_of_speech=part_of_speech)
+        word_pos.delete()
+        
+        return Response(status=status.HTTP_204_NO_CONTENT)

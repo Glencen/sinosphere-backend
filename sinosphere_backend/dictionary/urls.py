@@ -30,4 +30,12 @@ urlpatterns = [
     # Части речи
     path('parts-of-speech/', views.PartOfSpeechListView.as_view(), name='part-of-speech-list'),
     path('parts-of-speech/<str:name>/', views.PartOfSpeechDetailView.as_view(), name='part-of-speech-detail'),
+    
+    # Тэги конкретного слова
+    path('words/<int:word_id>/tags/', views.WordTagsView.as_view(), name='word-tags'),
+    path('words/<int:word_id>/tags/<str:tag_name>/', views.WordTagDetailByWordView.as_view(), name='word-tag-detail'),
+    
+    # Части речи конкретного слова
+    path('words/<int:word_id>/parts-of-speech/', views.WordPartsOfSpeechView.as_view(), name='word-parts-of-speech'),
+    path('words/<int:word_id>/parts-of-speech/<str:pos_name>/', views.WordPartOfSpeechDetailByWordView.as_view(), name='word-pos-detail'),
 ]
