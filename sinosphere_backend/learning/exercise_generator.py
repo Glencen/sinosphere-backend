@@ -77,7 +77,7 @@ class ExerciseGenerator:
         """Получить слова для повторения"""
         user_words = UserWord.objects.filter(
             user=self.user,
-            next_review__lte=timezone.now()
+            due__lte=timezone.now()
         ).select_related('word')
         
         if self.topic_id:
@@ -97,7 +97,7 @@ class ExerciseGenerator:
         """Рассчитать соотношение новых слов на основе прогресса"""
         pending_reviews = UserWord.objects.filter(
             user=self.user,
-            next_review__lte=timezone.now()
+            due__lte=timezone.now()
         ).count()
         
         base_ratio = 0.3
@@ -288,7 +288,7 @@ class ExerciseGenerator:
             user_word = UserWord.objects.create(
                 user=self.user,
                 word=word,
-                state=0,  # Новое слово
+                state=0,
                 difficulty=word.difficulty,
                 stability=1.0
             )
