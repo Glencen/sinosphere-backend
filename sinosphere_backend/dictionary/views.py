@@ -3,12 +3,162 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
-from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech
+from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech, Topic, ExampleSentence
 from .serializers import (
     WordSerializer, WordCompositionSerializer, TagSerializer, 
     PartOfSpeechSerializer, WordTagSerializer, WordPartOfSpeechSerializer,
-    BulkWordCompositionSerializer, WordTagsSerializer, WordPartsOfSpeechSerializer
+    BulkWordCompositionSerializer, WordTagsSerializer, WordPartsOfSpeechSerializer,
+    TopicSerializer, ExampleSentenceSerializer
 )
+
+class TopicListView(APIView):
+    """
+    API для получения списка тем
+    """
+    def get(self, request):
+        topics = Topic.objects.filter(is_active=True).order_by('order')
+        serializer = TopicSerializer(topics, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request):
+        serializer = TopicSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class TopicDetailView(APIView):
+    """
+    API для работы с конкретной темой
+    """
+    def get(self, request, pk):
+        topic = get_object_or_404(Topic, pk=pk)
+        serializer = TopicSerializer(topic)
+        return Response(serializer.data)
+    
+    def put(self, request, pk):
+        topic = get_object_or_404(Topic, pk=pk)
+        serializer = TopicSerializer(topic, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, pk):
+        topic = get_object_or_404(Topic, pk=pk)
+        topic.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+class TopicTagsView(APIView):
+    """
+    API для получения тегов конкретной темы
+    """
+    def get(self, request, topic_id):
+        topic = get_object_or_404(Topic, pk=topic_id)
+        tags = topic.tags.all()
+        serializer = TagSerializer(tags, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request, topic_id):
+        topic = get_object_or_404(Topic, pk=topic_id)
+        
+        tag_name = request.data.get('name')
+        if not tag_name:
+            return Response(
+                {'error': 'Поле "name" обязательно'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        tag, created = Tag.objects.get_or_create(
+            name=tag_name,
+            defaults={'topic': topic}
+        )
+        
+        if not created and tag.topic != topic:
+            tag.topic = topic
+            tag.save()
+        
+        serializer = TagSerializer(tag)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+class ExampleSentenceListView(APIView):
+    """
+    API для работы с примерами предложений
+    """
+    def get(self, request):
+        examples = ExampleSentence.objects.all()
+        serializer = ExampleSentenceSerializer(examples, many=True)
+        return Response(serializer.data)
+    
+    def post(self, request):
+        serializer = ExampleSentenceSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ExampleSentenceDetailView(APIView):
+    """
+    API для работы с конкретным примером предложения
+    """
+    def get(self, request, pk):
+        example = get_object_or_404(ExampleSentence, pk=pk)
+        serializer = ExampleSentenceSerializer(example)
+        return Response(serializer.data)
+    
+    def put(self, request, pk):
+        example = get_object_or_404(ExampleSentence, pk=pk)
+        serializer = ExampleSentenceSerializer(example, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, pk):
+        example = get_object_or_404(ExampleSentence, pk=pk)
+        example.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+class WordsByTopicView(APIView):
+    """
+    API для получения слов по теме
+    """
+    def get(self, request, topic_id):
+        topic = get_object_or_404(Topic, pk=topic_id)
+        
+        tag_ids = topic.tags.values_list('id', flat=True)
+        
+        words = Word.objects.filter(
+            wordtags__tag_id__in=tag_ids
+        ).distinct()
+        
+        serializer = WordSerializer(words, many=True)
+        return Response(serializer.data)
+
+
+class TopicTreeView(APIView):
+    """
+    API для получения дерева тем
+    """
+    def get(self, request):
+        root_topics = Topic.objects.filter(parent_topic__isnull=True, is_active=True)
+        
+        def build_tree(topic):
+            subtopics = topic.subtopics.filter(is_active=True)
+            return {
+                'id': topic.id,
+                'name': topic.name,
+                'description': topic.description,
+                'icon': topic.icon,
+                'difficulty_level': topic.difficulty_level,
+                'order': topic.order,
+                'subtopics': [build_tree(st) for st in subtopics]
+            }
+        
+        tree = [build_tree(topic) for topic in root_topics]
+        return Response(tree)
 
 class WordListCreateView(APIView):
     """
