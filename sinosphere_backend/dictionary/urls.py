@@ -38,4 +38,15 @@ urlpatterns = [
     # Части речи конкретного слова
     path('words/<int:word_id>/parts-of-speech/', views.WordPartsOfSpeechView.as_view(), name='word-parts-of-speech'),
     path('words/<int:word_id>/parts-of-speech/<str:pos_name>/', views.WordPartOfSpeechDetailByWordView.as_view(), name='word-pos-detail'),
+
+    # Темы
+    path('topics/', views.TopicListView.as_view(), name='topic-list'),
+    path('topics/<int:pk>/', views.TopicDetailView.as_view(), name='topic-detail'),
+    path('topics/tree/', views.TopicTreeView.as_view(), name='topic-tree'),
+    path('topics/<int:topic_id>/tags/', views.TopicTagsView.as_view(), name='topic-tags'),
+    path('topics/<int:topic_id>/words/', views.WordsByTopicView.as_view(), name='words-by-topic'),
+    
+    # Примеры предложений
+    path('example-sentences/', views.ExampleSentenceListView.as_view(), name='example-sentence-list'),
+    path('example-sentences/<int:pk>/', views.ExampleSentenceDetailView.as_view(), name='example-sentence-detail'),
 ]
