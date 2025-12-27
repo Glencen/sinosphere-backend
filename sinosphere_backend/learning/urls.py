@@ -24,4 +24,7 @@ urlpatterns = [
     
     # Цели
     path('daily-goal/', views.UpdateDailyGoalView.as_view(), name='update-daily-goal'),
+
+    # Все данные одним запросом
+    path('dashboard/', views.LearningDashboardView.as_view(), name='learning-dashboard'),
 ]

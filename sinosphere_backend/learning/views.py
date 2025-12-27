@@ -206,8 +206,7 @@ class SubmitExerciseView(APIView):
             word=word,
             is_correct=is_correct,
             time_spent=response_time,
-            difficulty=word.difficulty,
-            user_rating=rating
+            difficulty=word.difficulty
         )
         
         self._update_daily_goal(user, response_time, xp=15 if is_correct else 5)
@@ -293,6 +292,10 @@ class SubmitExerciseView(APIView):
     
     def _update_topic_progress(self, user, word, is_correct):
         """Обновить прогресс по теме"""
+        from users.models import UserTopicProgress
+        from django.utils import timezone
+        from dictionary.models import Topic, WordTag
+        
         topics = Topic.objects.filter(
             tags__tagged_words__word=word
         ).distinct()
@@ -301,39 +304,111 @@ class SubmitExerciseView(APIView):
             progress, created = UserTopicProgress.objects.get_or_create(
                 user=user,
                 topic=topic,
-                defaults={'total_words': topic.tags.count()}
+                defaults={
+                    'total_words': self._get_words_count_in_topic(topic),
+                    'is_active': True,
+                    'last_practiced': timezone.now()
+                }
             )
             
-            if created:
-                progress.accuracy = 100 if is_correct else 0
-            else:
+            if not created:
                 total_attempts = getattr(progress, 'total_attempts', 0) + 1
                 total_correct = getattr(progress, 'total_correct', 0)
                 
                 if is_correct:
                     total_correct += 1
                 
-                progress.accuracy = (total_correct / total_attempts * 100) if total_attempts > 0 else 0
                 progress.total_attempts = total_attempts
                 progress.total_correct = total_correct
-            
-            progress.last_practiced = timezone.now()
-            
-            if progress.accuracy >= 90:
-                progress.mastery_level = 5
-            elif progress.accuracy >= 75:
-                progress.mastery_level = 4
-            elif progress.accuracy >= 60:
-                progress.mastery_level = 3
-            elif progress.accuracy >= 40:
-                progress.mastery_level = 2
-            elif progress.accuracy > 0:
-                progress.mastery_level = 1
-            else:
-                progress.mastery_level = 0
+                progress.accuracy = (total_correct / total_attempts * 100) if total_attempts > 0 else 0
+                progress.last_practiced = timezone.now()
+                
+                progress.words_learned = self._get_learned_words_count_in_topic(user, topic)
+                
+                if progress.accuracy >= 90:
+                    progress.mastery_level = 5
+                elif progress.accuracy >= 75:
+                    progress.mastery_level = 4
+                elif progress.accuracy >= 60:
+                    progress.mastery_level = 3
+                elif progress.accuracy >= 40:
+                    progress.mastery_level = 2
+                elif progress.accuracy > 0:
+                    progress.mastery_level = 1
+                else:
+                    progress.mastery_level = 0
             
             progress.save()
+    
+    def _get_words_count_in_topic(self, topic):
+        """Получить количество слов в теме"""
+        tag_ids = topic.tags.values_list('id', flat=True)
+        from dictionary.models import WordTag
+        return WordTag.objects.filter(tag_id__in=tag_ids).values('word').distinct().count()
 
+    def _get_learned_words_count_in_topic(self, user, topic):
+        """Получить количество изученных слов в теме"""
+        from users.models import UserWord
+        tag_ids = topic.tags.values_list('id', flat=True)
+        
+        user_words = UserWord.objects.filter(
+            user=user,
+            word__word_tags__tag_id__in=tag_ids
+        ).distinct()
+        
+        learned_count = 0
+        for user_word in user_words:
+            if user_word.is_learned:
+                learned_count += 1
+        
+        return learned_count
+
+    def _update_daily_goal(self, user, response_time, xp=0, words=0):
+        """Обновить прогресс дневной цели"""
+        from .models import DailyGoal
+        from django.utils import timezone
+        
+        today = timezone.now().date()
+        
+        try:
+            daily_goal = DailyGoal.objects.get(user=user, date=today)
+        except DailyGoal.DoesNotExist:
+            daily_goal = DailyGoal.objects.create(
+                user=user,
+                date=today,
+                target_xp=100,
+                target_words=10,
+                target_time=30
+            )
+        
+        time_minutes = response_time / 60.0 if response_time else 0
+        
+        daily_goal.update_progress(xp=xp, words=words, time_minutes=time_minutes)
+    
+    def _update_learning_stats(self, user, is_correct, response_time):
+        """Обновить статистику обучения"""
+        from users.models import UserLearningStats
+        
+        stats, created = UserLearningStats.objects.get_or_create(user=user)
+        stats.update_streak()
+        
+        stats.total_exercises_completed += 1
+        stats.total_time_spent += int(response_time)
+        xp_to_add = 15 if is_correct else 5
+        stats.xp_points += xp_to_add
+        
+        self._update_user_level(stats)
+        
+        stats.save()
+    
+    def _update_user_level(self, stats):
+        """Обновить уровень пользователя на основе XP"""
+        required_xp = stats.level * 100
+        
+        while stats.xp_points >= required_xp:
+            stats.level += 1
+            stats.xp_points -= required_xp
+            required_xp = stats.level * 100
 
 class ReviewScheduleView(APIView):
     """
@@ -355,7 +430,7 @@ class ReviewScheduleView(APIView):
                     'word': word.word.hanzi,
                     'pinyin': word.word.pinyin_graphic,
                     'translation': word.word.translation.split(';')[0].strip(),
-                    'next_review': word.next_review,
+                    'next_review': word.due,
                     'stability': word.stability,
                     'difficulty': word.difficulty,
                     'reps': word.reps,
@@ -374,36 +449,39 @@ class LearningStatsView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        stats, _ = UserLearningStats.objects.get_or_create(user=request.user)
+        user = request.user
+        
+        user_words = UserWord.objects.filter(user=user)
+        
+        stats, _ = UserLearningStats.objects.get_or_create(user=user)
         stats_serializer = LearningStatsSerializer(stats)
         
         topic_progress = UserTopicProgress.objects.filter(
-            user=request.user,
+            user=user,
             is_active=True
         )
         topic_serializer = TopicProgressSerializer(topic_progress, many=True)
         
         today = timezone.now().date()
         daily_goal = DailyGoal.objects.filter(
-            user=request.user,
+            user=user,
             date=today
         ).first()
         
         if daily_goal:
             daily_serializer = DailyGoalSerializer(daily_goal)
         else:
-            daily_serializer = DailyGoalSerializer({
-                'target_xp': 100,
-                'target_words': 10,
-                'target_time': 30,
-                'current_xp': 0,
-                'current_words': 0,
-                'current_time': 0,
-                'completed': False
-            })
+            daily_goal = DailyGoal.objects.create(
+                user=user,
+                target_xp=100,
+                target_words=10,
+                target_time=30,
+                date=today
+            )
+            daily_serializer = DailyGoalSerializer(daily_goal)
         
         exercise_stats = UserExerciseHistory.objects.filter(
-            user=request.user,
+            user=user,
             created_at__gte=timezone.now() - timedelta(days=30)
         ).values('exercise_type').annotate(
             total=Count('id'),
@@ -412,9 +490,16 @@ class LearningStatsView(APIView):
         )
         
         today_reviews = UserWord.objects.filter(
-            user=request.user,
-            next_review__lte=timezone.now()
+            user=user,
+            due__lte=timezone.now()
         ).count()
+        
+        total_words = user_words.count()
+        
+        learned_words_count = 0
+        for user_word in user_words:
+            if user_word.is_learned:
+                learned_words_count += 1
         
         return Response({
             'stats': stats_serializer.data,
@@ -422,8 +507,8 @@ class LearningStatsView(APIView):
             'daily_goal': daily_serializer.data,
             'exercise_stats': list(exercise_stats),
             'today_reviews': today_reviews,
-            'total_words': UserWord.objects.filter(user=request.user).count(),
-            'learned_words': UserWord.objects.filter(user=request.user, is_learned=True).count()
+            'total_words': total_words,
+            'learned_words': learned_words_count
         })
 
 
@@ -484,10 +569,39 @@ class UpdateDailyGoalView(APIView):
     """
     permission_classes = [IsAuthenticated]
     
+    def get(self, request):
+        """Получение дневной цели (ДОБАВЛЕН GET метод)"""
+        today = timezone.now().date()
+        daily_goal = DailyGoal.objects.filter(
+            user=request.user,
+            date=today
+        ).first()
+        
+        if daily_goal:
+            serializer = DailyGoalSerializer(daily_goal)
+        else:
+            daily_goal = DailyGoal.objects.create(
+                user=request.user,
+                target_xp=100,
+                target_words=10,
+                target_time=30,
+                date=today
+            )
+            serializer = DailyGoalSerializer(daily_goal)
+        
+        return Response(serializer.data)
+    
     def put(self, request):
+        """Обновление дневной цели"""
+        today = timezone.now().date()
         goal, created = DailyGoal.objects.get_or_create(
             user=request.user,
-            date=timezone.now().date()
+            date=today,
+            defaults={
+                'target_xp': 100,
+                'target_words': 10,
+                'target_time': 30
+            }
         )
         
         serializer = DailyGoalSerializer(goal, data=request.data, partial=True)
@@ -585,3 +699,106 @@ class PracticeSessionView(APIView):
             'count': len(exercises),
             'type': session_type
         })
+    
+class LearningDashboardView(APIView):
+    """
+    Получение всех данных для главной страницы обучения одним запросом
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        user = request.user
+        
+        user_words = UserWord.objects.filter(user=user)
+        stats, _ = UserLearningStats.objects.get_or_create(user=user)
+        
+        learned_words_count = 0
+        for user_word in user_words:
+            if user_word.is_learned:
+                learned_words_count += 1
+        
+        stats_data = {
+            'total_words': user_words.count(),
+            'learned_words': learned_words_count,
+            'level': stats.level,
+            'current_streak': stats.current_streak,
+            'total_lessons_completed': stats.total_lessons_completed,
+            'total_exercises_completed': stats.total_exercises_completed,
+            'total_time_spent': stats.total_time_spent,
+            'xp_points': stats.xp_points
+        }
+        
+        today = timezone.now().date()
+        daily_goal = DailyGoal.objects.filter(
+            user=user,
+            date=today
+        ).first()
+        
+        if not daily_goal:
+            daily_goal = DailyGoal.objects.create(
+                user=user,
+                target_xp=100,
+                target_words=10,
+                target_time=30,
+                date=today
+            )
+        
+        daily_goal_data = {
+            'target_xp': daily_goal.target_xp,
+            'target_words': daily_goal.target_words,
+            'target_time': daily_goal.target_time,
+            'current_xp': daily_goal.current_xp,
+            'current_words': daily_goal.current_words,
+            'current_time': daily_goal.current_time,
+            'completed': daily_goal.completed,
+            'date': daily_goal.date
+        }
+        
+        words_for_review = UserWord.objects.filter(
+            user=user,
+            due__lte=timezone.now()
+        ).count()
+        
+        topics = UserTopicProgress.objects.filter(
+            user=user,
+            is_active=True
+        ).order_by('-mastery_level')[:4]
+        
+        topics_data = []
+        for topic in topics:
+            topic_obj = topic.topic
+            words_learned = topic.words_learned or 0
+            total_words = topic.total_words or 1
+            
+            topics_data.append({
+                'id': topic.id,
+                'topic_id': topic_obj.id if topic_obj else topic.topic_id,
+                'name': topic_obj.name if topic_obj else 'Тема',
+                'description': topic_obj.description if topic_obj else '',
+                'icon': topic_obj.icon if topic_obj and hasattr(topic_obj, 'icon') else '📚',
+                'words_count': total_words,
+                'progress_percentage': round((words_learned / total_words * 100), 1),
+                'mastery_level': topic.mastery_level or 0,
+                'is_active': topic.is_active
+            })
+        
+        return Response({
+            'stats': stats_data,
+            'daily_goal': daily_goal_data,
+            'words_for_review': words_for_review,
+            'topics': topics_data,
+            'success': True
+        })
+    
+    def _get_learned_words_count(self, user):
+        """
+        Определяем количество изученных слов.
+        """
+        user_words = UserWord.objects.filter(user=user)
+        learned_words_count = 0
+        
+        for user_word in user_words:
+            if user_word.is_learned:
+                learned_words_count += 1
+        
+        return learned_words_count

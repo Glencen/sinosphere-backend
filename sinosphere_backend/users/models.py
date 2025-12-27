@@ -252,29 +252,61 @@ class UserWord(models.Model):
     
     def to_fsrs_card(self) -> Card:
         """Конвертировать модель в объект Card FSRS"""
+        from fsrs import Card, State
+        
+        try:
+            self._old_state = self.state
+            
+            if hasattr(State, '_value2member_map_'):
+                try:
+                    fsrs_state = State(self.state)
+                except ValueError:
+                    fsrs_state = State.Learning
+            else:
+                fsrs_state = self.state
+        except:
+            fsrs_state = State.Learning if hasattr(State, 'Learning') else 1
+        
         return Card(
+            card_id=self.id,
             due=self.due,
-            stability=self.stability,
-            difficulty=self.difficulty,
-            elapsed_days=self.elapsed_days,
-            scheduled_days=self.scheduled_days,
-            reps=self.reps,
-            lapses=self.lapses,
-            state=self.state,
-            last_review=self.last_review
+            stability=self.stability if self.stability != 0 else None,
+            difficulty=self.difficulty if self.difficulty != 8.0 else None,
+            state=fsrs_state,
+            last_review=self.last_review,
+            step=None
         )
     
     def from_fsrs_card(self, card: Card):
         """Обновить модель из объекта Card FSRS"""
         self.due = card.due
-        self.stability = card.stability
-        self.difficulty = card.difficulty
-        self.elapsed_days = card.elapsed_days
-        self.scheduled_days = card.scheduled_days
-        self.reps = card.reps
-        self.lapses = card.lapses
-        self.state = card.state
-        self.last_review = card.last_review
+        self.stability = card.stability if card.stability is not None else self.stability
+        self.difficulty = card.difficulty if card.difficulty is not None else self.difficulty
+        
+        if hasattr(card.state, 'value'):
+            self.state = card.state.value
+        else:
+            self.state = card.state
+        
+        self.last_review = timezone.now()
+        
+        if self.state in [2, 3]:
+            self.reps = (self.reps if self.reps else 0) + 1
+        elif self.state == 1 and (not self.reps or self.reps == 0):
+            self.reps = 1
+        
+        old_state = getattr(self, '_old_state', None)
+        if old_state == 2 and self.state == 3:
+            self.lapses = (self.lapses if self.lapses else 0) + 1
+        
+        if hasattr(self, '_old_state'):
+            delattr(self, '_old_state')
+        
+        if self.last_review and self.due:
+            time_diff = self.due - self.last_review
+            self.scheduled_days = max(0, time_diff.days)
+            
+            self.elapsed_days = 0
     
     def calculate_automatic_rating(self, is_correct: bool, response_time: float, exercise_type: str) -> int:
         """
@@ -321,9 +353,7 @@ class UserWord(models.Model):
             return 2
     
     def update_review(self, is_correct: bool, response_time: float, exercise_type: str):
-        """
-        Обновить состояние после выполнения упражнения
-        """
+        """Обновить состояние после выполнения упражнения"""
         self.total_attempts += 1
         if is_correct:
             self.correct_attempts += 1
@@ -337,10 +367,10 @@ class UserWord(models.Model):
             self.avg_response_time = (
                 self.avg_response_time * (self.total_attempts - 1) + response_time
             ) / self.total_attempts
-    
+
         rating = self.calculate_automatic_rating(is_correct, response_time, exercise_type)
         
-        ReviewLog.objects.create(
+        review_log = ReviewLog.objects.create(
             user_word=self,
             rating=rating,
             is_correct=is_correct,
@@ -349,13 +379,51 @@ class UserWord(models.Model):
             review_date=timezone.now()
         )
         
-        scheduler = LearningScheduler.get_scheduler()
-        fsrs_card = self.to_fsrs_card()
-        scheduled_cards = scheduler.repeat(fsrs_card, timezone.now())
-        
-        if scheduled_cards and rating in scheduled_cards:
-            new_card_state = scheduled_cards[rating]
-            self.from_fsrs_card(new_card_state)
+        try:
+            scheduler = LearningScheduler.get_scheduler(user=self.user)
+            
+            fsrs_card = self.to_fsrs_card()
+            
+            from fsrs import Rating
+            fsrs_rating = Rating(rating)
+            
+            updated_card, fsrs_review_log = scheduler.review_card(
+                fsrs_card, 
+                fsrs_rating, 
+                review_datetime=timezone.now(),
+                review_duration=int(response_time * 1000)
+            )
+            
+            self.from_fsrs_card(updated_card)
+            
+            if fsrs_review_log and hasattr(fsrs_review_log, 'scheduled_days'):
+                review_log.scheduled_days = fsrs_review_log.scheduled_days
+                review_log.save()
+                
+        except Exception as e:
+            print(f"Error using FSRS scheduler: {e}")
+            self.last_review = timezone.now()
+            
+            if is_correct:
+                if self.state == 0:
+                    self.state = 1
+                    self.due = timezone.now() + timedelta(minutes=10)
+                    self.reps = 1
+                elif self.state == 1:
+                    self.state = 2
+                    self.due = timezone.now() + timedelta(days=1)
+                    self.reps += 1
+                elif self.state == 2:
+                    current_interval = self.scheduled_days if self.scheduled_days > 0 else 1
+                    new_interval = min(current_interval * 2, 365)
+                    self.due = timezone.now() + timedelta(days=new_interval)
+                    self.reps += 1
+                    self.scheduled_days = new_interval
+            else:
+                if self.state == 2:
+                    self.state = 3
+                    self.lapses += 1
+                self.due = timezone.now() + timedelta(minutes=10)
         
         self.save()
         
@@ -441,15 +509,52 @@ class LearningScheduler:
     """
     _scheduler = None
     _optimizer = None
+    _default_scheduler = None
     
     @classmethod
-    def get_scheduler(cls) -> Scheduler:
-        """Получить экземпляр Scheduler"""
-        if cls._scheduler is None:
-            from fsrs import Scheduler
-            cls._scheduler = Scheduler()
-        return cls._scheduler
+    def get_scheduler(cls, user=None) -> Scheduler:
+        """Получить экземпляр Scheduler для пользователя"""
+        if user:
+            try:
+                from users.models import UserLearningProfile
+                user_profile, created = UserLearningProfile.objects.get_or_create(
+                    user=user,
+                    defaults={
+                        'fsrs_weights': '[]',
+                        'new_cards_per_day': 10,
+                        'max_reviews_per_day': 100,
+                        'learning_steps': [1, 10],
+                        're_learning_steps': [10],
+                        'desired_retention': 0.9,
+                        'maximum_interval': 36500,
+                    }
+                )
+                
+                weights = user_profile.get_fsrs_weights()
+                
+                if not weights or weights == []:
+                    return cls._get_default_scheduler()
+                
+                if isinstance(weights, list):
+                    weights = tuple(weights)
+                
+                from fsrs import Scheduler
+                return Scheduler(parameters=weights)
+                
+            except Exception as e:
+                print(f"Error getting user weights: {e}")
+                return cls._get_default_scheduler()
+        
+        return cls._get_default_scheduler()
     
+    @classmethod
+    def _get_default_scheduler(cls):
+        """Получить дефолтный шедулер"""
+        if cls._default_scheduler is None:
+            from fsrs import Scheduler
+            cls._default_scheduler = Scheduler()
+        return cls._default_scheduler
+
     @classmethod
     def get_optimizer(cls):
         """Получить экземпляр Optimizer"""
