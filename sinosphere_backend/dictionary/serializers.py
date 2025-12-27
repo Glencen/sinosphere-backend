@@ -1,11 +1,42 @@
 from rest_framework import serializers
 from django.db import transaction
-from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech
+from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech, Topic, ExampleSentence
+
+class TopicSerializer(serializers.ModelSerializer):
+    subtopics_count = serializers.SerializerMethodField()
+    tags_count = serializers.SerializerMethodField()
+    words_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Topic
+        fields = [
+            'id', 'name', 'description', 'parent_topic', 'weight', 'icon',
+            'difficulty_level', 'is_active', 'order', 'subtopics_count',
+            'tags_count', 'words_count'
+        ]
+    
+    def get_subtopics_count(self, obj):
+        return obj.subtopics.count()
+    
+    def get_tags_count(self, obj):
+        return obj.tags.count()
+    
+    def get_words_count(self, obj):
+        from django.db.models import Count
+        tag_ids = obj.tags.values_list('id', flat=True)
+        return WordTag.objects.filter(tag_id__in=tag_ids).values('word').distinct().count()
 
 class TagSerializer(serializers.ModelSerializer):
+    topic_info = TopicSerializer(source='topic', read_only=True)
+    words_count = serializers.SerializerMethodField()
+    
     class Meta:
         model = Tag
-        fields = ['name']
+        fields = ['id', 'name', 'topic', 'topic_info', 'description', 
+                 'weight', 'frequency_rank', 'words_count']
+    
+    def get_words_count(self, obj):
+        return obj.tagged_words.count()
 
 class PartOfSpeechSerializer(serializers.ModelSerializer):
     class Meta:
@@ -226,6 +257,7 @@ class WordSerializer(serializers.ModelSerializer):
     parts_of_speech = WordPartOfSpeechSerializer(many=True, read_only=True, source='wordpartsofspeech')
     components = WordCompositionSerializer(many=True, read_only=True)
     used_in_words = WordCompositionSerializer(many=True, read_only=True)
+    topics = serializers.SerializerMethodField()
     
     tag_names = serializers.ListField(
         child=serializers.CharField(),
@@ -243,8 +275,15 @@ class WordSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'hanzi', 'pinyin_numeric', 'pinyin_graphic', 
             'translation', 'difficulty', 'tags', 'parts_of_speech',
-            'components', 'used_in_words', 'tag_names', 'part_of_speech_names'
+            'components', 'used_in_words', 'topics', 'tag_names', 
+            'part_of_speech_names'
         ]
+    
+    def get_topics(self, obj):
+        topics = Topic.objects.filter(
+            tags__tagged_words__word=obj
+        ).distinct()
+        return TopicSerializer(topics, many=True).data
     
     @transaction.atomic
     def create(self, validated_data):
@@ -297,3 +336,13 @@ class WordPartsOfSpeechSerializer(serializers.ModelSerializer):
     class Meta:
         model = WordPartOfSpeech
         fields = ['id', 'part_of_speech_name']
+
+class ExampleSentenceSerializer(serializers.ModelSerializer):
+    word_info = WordSerializer(source='word', read_only=True)
+    
+    class Meta:
+        model = ExampleSentence
+        fields = [
+            'id', 'word', 'word_info', 'chinese_sentence', 'pinyin_sentence',
+            'translation', 'difficulty'
+        ]
