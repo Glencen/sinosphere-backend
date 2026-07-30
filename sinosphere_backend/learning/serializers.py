@@ -107,9 +107,10 @@ class TopicProgressSerializer(serializers.ModelSerializer):
 class ExerciseSubmissionSerializer(serializers.Serializer):
     exercise_id = serializers.IntegerField(required=False)
     word_id = serializers.IntegerField(required=True)
-    answer = serializers.CharField(required=True)
+    answer = serializers.JSONField(required=True)
     exercise_type = serializers.CharField(required=True)
     time_spent = serializers.FloatField(default=0)
+    exercise_data = serializers.JSONField(required=False)
     
     def validate(self, data):
         from dictionary.models import Word
