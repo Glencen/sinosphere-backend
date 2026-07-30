@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.db.models import Avg, Count, Sum, Q, F, ExpressionWrapper, FloatField
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -22,109 +23,35 @@ from .serializers import (
 User = get_user_model()
 
 
-class RegisterView(APIView):
-    """
-    Регистрация нового пользователя
-    """
-    permission_classes = [AllowAny]
-    
-    def post(self, request):
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            
-            UserProfile.objects.create(user=user)
-            
-            refresh = RefreshToken.for_user(user)
-            
-            return Response({
-                'user': serializer.data,
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'message': 'Пользователь успешно зарегистрирован'
-            }, status=status.HTTP_201_CREATED)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+def _user_payload(user):
+    return {
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+    }
 
 
-class LoginView(APIView):
-    """
-    Аутентификация пользователя
-    """
-    permission_classes = [AllowAny]
-    
-    def post(self, request):
-        username = request.data.get('username')
-        password = request.data.get('password')
-        
-        if not username or not password:
-            return Response(
-                {'error': 'Необходимо указать имя пользователя и пароль'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        user = authenticate(username=username, password=password)
-        
-        if user:
-            refresh = RefreshToken.for_user(user)
-            
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'user_id': user.id,
-                'username': user.username,
-                'email': user.email
-            })
-        
-        return Response(
-            {'error': 'Неверные учетные данные'},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+def _set_refresh_cookie(response, refresh_token):
+    response.set_cookie(
+        settings.JWT_REFRESH_COOKIE_NAME,
+        str(refresh_token),
+        max_age=int(settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds()),
+        httponly=True,
+        secure=settings.JWT_REFRESH_COOKIE_SECURE,
+        samesite=settings.JWT_REFRESH_COOKIE_SAMESITE,
+        path='/api/',
+    )
+    return response
 
 
-class LogoutView(APIView):
-    """
-    Выход пользователя из системы
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def post(self, request):
-        try:
-            return Response({
-                'message': 'Успешный выход из системы. Удалите токены на клиенте.'
-            })
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+def _clear_refresh_cookie(response):
+    response.delete_cookie(
+        settings.JWT_REFRESH_COOKIE_NAME,
+        path='/api/',
+        samesite=settings.JWT_REFRESH_COOKIE_SAMESITE,
+    )
+    return response
 
-
-class TokenRefreshView(APIView):
-    """
-    Обновление access токена с помощью refresh токена
-    """
-    permission_classes = [AllowAny]
-    
-    def post(self, request):
-        refresh_token = request.data.get('refresh')
-        
-        if not refresh_token:
-            return Response(
-                {'error': 'Refresh токен не предоставлен'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        try:
-            refresh = RefreshToken(refresh_token)
-            return Response({
-                'access': str(refresh.access_token),
-            })
-        except Exception as e:
-            return Response(
-                {'error': 'Недействительный refresh токен'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
 
 class UserProfileView(APIView):
     """
@@ -178,6 +105,19 @@ class UserWordListView(APIView):
         
         serializer = UserWordListSerializer(user_words, many=True)
         return Response(serializer.data)
+
+    def post(self, request):
+        serializer = UserWordSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        if serializer.is_valid():
+            user_word = serializer.save()
+            return Response(
+                UserWordSerializer(user_word).data,
+                status=status.HTTP_201_CREATED
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class UserWordLegacyDetailView(APIView):
@@ -838,3 +778,83 @@ class ExportLearningDataView(APIView):
             })
         
         return Response(data)
+
+
+class RegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = UserSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            UserProfile.objects.create(user=user)
+            refresh = RefreshToken.for_user(user)
+
+            response = Response({
+                'user': _user_payload(user),
+                'access': str(refresh.access_token),
+                'message': 'User registered successfully',
+            }, status=status.HTTP_201_CREATED)
+            return _set_refresh_cookie(response, refresh)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class LoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        if not username or not password:
+            return Response(
+                {'error': 'Username and password are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = authenticate(username=username, password=password)
+
+        if user:
+            refresh = RefreshToken.for_user(user)
+            response = Response({
+                'access': str(refresh.access_token),
+                'user': _user_payload(user),
+            })
+            return _set_refresh_cookie(response, refresh)
+
+        return Response(
+            {'error': 'Invalid credentials'},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+
+class LogoutView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        response = Response({'message': 'Logged out'})
+        return _clear_refresh_cookie(response)
+
+
+class TokenRefreshView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get(settings.JWT_REFRESH_COOKIE_NAME)
+
+        if not refresh_token:
+            return Response(
+                {'error': 'Refresh token is missing'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            refresh = RefreshToken(refresh_token)
+            return Response({'access': str(refresh.access_token)})
+        except Exception:
+            response = Response(
+                {'error': 'Invalid refresh token'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+            return _clear_refresh_cookie(response)
