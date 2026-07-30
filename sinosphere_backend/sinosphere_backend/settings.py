@@ -50,8 +50,8 @@ REST_FRAMEWORK = {
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
+    'ROTATE_REFRESH_TOKENS': False,
+    'BLACKLIST_AFTER_ROTATION': False,
 }
 
 CORS_ALLOWED_ORIGINS = [
@@ -62,6 +62,11 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',')
     if origin.strip()
 ]
+CORS_ALLOW_CREDENTIALS = True
+
+JWT_REFRESH_COOKIE_NAME = os.getenv('JWT_REFRESH_COOKIE_NAME', 'sinosphere_refresh')
+JWT_REFRESH_COOKIE_SECURE = os.getenv('JWT_REFRESH_COOKIE_SECURE', 'false').lower() in ('1', 'true', 'yes', 'on')
+JWT_REFRESH_COOKIE_SAMESITE = os.getenv('JWT_REFRESH_COOKIE_SAMESITE', 'Lax')
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
