@@ -1,6 +1,7 @@
 import random
 from datetime import timedelta
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Q, Count, Avg
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -8,7 +9,10 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes, api_view
 from django.shortcuts import get_object_or_404
-from .models import Lesson, Exercise, UserLessonProgress, DailyGoal
+from .models import (
+    Lesson, Exercise, UserLessonProgress, DailyGoal,
+    PracticeSession, ExerciseAttempt
+)
 from dictionary.models import Topic, Word, WordTag
 from users.models import UserWord, UserLearningStats, UserTopicProgress, UserExerciseHistory
 from .serializers import (
@@ -18,6 +22,55 @@ from .serializers import (
 )
 from .exercise_generator import ExerciseGenerator
 from .fsrs_optimizer import FSRSOptimizer
+
+
+ANSWER_FIELDS = {'correct_answer', 'correct_index', 'correct_pairs'}
+
+
+def _first_translation(translation):
+    translations = [item.strip() for item in translation.split(';') if item.strip()]
+    return translations[0] if translations else translation
+
+
+def _normalize_text(value):
+    return str(value or '').strip().lower()
+
+
+def _public_exercise_payload(exercise, attempt_id=None, session_id=None):
+    payload = {
+        key: value
+        for key, value in exercise.items()
+        if key not in ANSWER_FIELDS
+    }
+
+    if 'pairs' in payload:
+        payload['pairs'] = [
+            {
+                key: value
+                for key, value in pair.items()
+                if key != 'translation'
+            }
+            for pair in payload.get('pairs', [])
+        ]
+
+    if attempt_id is not None:
+        payload['attempt_id'] = attempt_id
+    if session_id is not None:
+        payload['session_id'] = session_id
+
+    return payload
+
+
+def _grading_payload(exercise):
+    return {
+        'type': exercise.get('type'),
+        'word_id': exercise.get('word_id'),
+        'correct_answer': exercise.get('correct_answer'),
+        'correct_index': exercise.get('correct_index'),
+        'correct_pairs': exercise.get('correct_pairs'),
+        'options': exercise.get('options') or [],
+        'pairs': exercise.get('pairs') or [],
+    }
 
 
 class TopicListView(APIView):
