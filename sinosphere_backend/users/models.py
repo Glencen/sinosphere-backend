@@ -67,6 +67,8 @@ class UserTopicProgress(models.Model):
     words_learned = models.IntegerField(default=0, verbose_name='Слов изучено')
     total_words = models.IntegerField(default=0, verbose_name='Всего слов в теме')
     accuracy = models.FloatField(default=0.0, verbose_name='Точность ответов')
+    total_attempts = models.IntegerField(default=0, verbose_name='Всего попыток')
+    total_correct = models.IntegerField(default=0, verbose_name='Правильных попыток')
     last_practiced = models.DateTimeField(null=True, blank=True, verbose_name='Последняя практика')
     is_active = models.BooleanField(default=False, verbose_name='Активно изучается')
     mastery_level = models.PositiveSmallIntegerField(
@@ -100,11 +102,11 @@ class UserTopicProgress(models.Model):
             tag_id__in=tag_ids
         ).values('word').distinct().count()
         
-        learned_words_count = UserWord.objects.filter(
+        user_words = UserWord.objects.filter(
             user=self.user,
-            word__word_tags__tag_id__in=tag_ids,
-            is_learned=True
-        ).distinct().count()
+            word__word_tags__tag_id__in=tag_ids
+        ).distinct()
+        learned_words_count = sum(1 for user_word in user_words if user_word.is_learned)
         
         self.total_words = total_words_count
         self.words_learned = learned_words_count

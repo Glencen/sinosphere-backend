@@ -172,7 +172,7 @@ class UserWordListView(APIView):
         elif sort_by == 'due':
             user_words = user_words.order_by('due')
         elif sort_by == 'mastery':
-            user_words = user_words.order_by('-mastery_score')
+            user_words = sorted(user_words, key=lambda uw: uw.mastery_score, reverse=True)
         elif sort_by == 'difficulty':
             user_words = user_words.order_by('-difficulty')
         
@@ -240,27 +240,12 @@ class WordsForReviewView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        user_words = UserWord.objects.filter(user=request.user)
-        
-        words_for_review = []
-        
-        for user_word in user_words:
-            if not user_word.is_learned:
-                if not user_word.last_reviewed:
-                    words_for_review.append(user_word)
-                else:
-                    days_since_review = (timezone.now() - user_word.last_reviewed).days
+        words_for_review = UserWord.objects.filter(
+            user=request.user,
+            due__lte=timezone.now(),
+            state__in=[1, 2, 3]
+        ).select_related('word').order_by('due')
 
-                    if user_word.review_count == 0:
-                        interval = 1
-                    elif user_word.review_count == 1:
-                        interval = 6
-                    else:
-                        interval = round(user_word.review_count * user_word.ease_factor)
-                    
-                    if days_since_review >= interval:
-                        words_for_review.append(user_word)
-        
         serializer = UserWordSerializer(words_for_review, many=True)
         return Response(serializer.data)
 
@@ -275,31 +260,18 @@ class UserStatsView(APIView):
         user_words = UserWord.objects.filter(user=request.user)
         
         total_words = user_words.count()
-        learned_words = user_words.filter(is_learned=True).count()
+        learned_words = sum(1 for user_word in user_words if user_word.is_learned)
         
         difficulty_stats = {}
         for i in range(1, 7):
             count = user_words.filter(word__difficulty=i).count()
             difficulty_stats[f'HSK{i}'] = count
         
-        review_words = UserWord.objects.filter(
+        today_reviews = UserWord.objects.filter(
             user=request.user,
-            is_learned=False
-        )
-        today_reviews = 0
-        for word in review_words:
-            if not word.last_reviewed:
-                today_reviews += 1
-            else:
-                days_since_review = (timezone.now() - word.last_reviewed).days
-                if word.review_count == 0 and days_since_review >= 1:
-                    today_reviews += 1
-                elif word.review_count == 1 and days_since_review >= 6:
-                    today_reviews += 1
-                elif word.review_count > 1:
-                    interval = round(word.review_count * word.ease_factor)
-                    if days_since_review >= interval:
-                        today_reviews += 1
+            due__lte=timezone.now(),
+            state__in=[1, 2, 3]
+        ).count()
         
         week_ago = timezone.now() - timezone.timedelta(days=7)
         words_last_week = user_words.filter(added_date__gte=week_ago).count()
@@ -311,7 +283,8 @@ class UserStatsView(APIView):
             'difficulty_stats': difficulty_stats,
             'words_for_review_today': today_reviews,
             'words_added_last_week': words_last_week,
-            'average_ease_factor': user_words.aggregate(Avg('ease_factor'))['ease_factor__avg'] or 0
+            'average_stability': user_words.aggregate(Avg('stability'))['stability__avg'] or 0,
+            'average_difficulty': user_words.aggregate(Avg('difficulty'))['difficulty__avg'] or 0
         })
 
 
@@ -525,8 +498,7 @@ class UserWordDetailView(APIView):
         serializer = UserWordDetailSerializer(
             user_word, 
             data=request.data, 
-            partial=True,
-            fields=['notes']
+            partial=True
         )
         
         if serializer.is_valid():
@@ -862,7 +834,6 @@ class ExportLearningDataView(APIView):
                 'is_correct': h.is_correct,
                 'time_spent': h.time_spent,
                 'difficulty': h.difficulty,
-                'user_rating': h.user_rating,
                 'created_at': h.created_at.isoformat()
             })
         
