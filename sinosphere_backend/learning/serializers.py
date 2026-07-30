@@ -93,10 +93,14 @@ class TopicProgressSerializer(serializers.ModelSerializer):
         model = UserTopicProgress
         fields = [
             'id', 'user', 'topic', 'topic_info', 'words_learned',
-            'total_words', 'accuracy', 'last_practiced', 'is_active',
-            'mastery_level', 'progress_percentage'
+            'total_words', 'accuracy', 'total_attempts', 'total_correct',
+            'last_practiced', 'is_active', 'mastery_level',
+            'progress_percentage'
         ]
-        read_only_fields = ['user', 'words_learned', 'total_words', 'accuracy']
+        read_only_fields = [
+            'user', 'words_learned', 'total_words', 'accuracy',
+            'total_attempts', 'total_correct'
+        ]
     
     def get_progress_percentage(self, obj):
         if obj.total_words > 0:
@@ -157,13 +161,15 @@ class LearningStatsSerializer(serializers.ModelSerializer):
 
 class GeneratedExerciseSerializer(serializers.Serializer):
     type = serializers.CharField()
-    question = serializers.CharField()
+    question = serializers.CharField(required=False, allow_blank=True)
     word_id = serializers.IntegerField()
     options = serializers.ListField(child=serializers.CharField(), required=False)
     correct_answer = serializers.CharField(required=False)
     hint = serializers.CharField(required=False, allow_blank=True)
     difficulty = serializers.IntegerField(default=1)
     pairs = serializers.ListField(child=serializers.DictField(), required=False)
+    correct_index = serializers.IntegerField(required=False)
+    correct_pairs = serializers.ListField(child=serializers.ListField(), required=False)
     instructions = serializers.CharField(required=False)
     
     def to_representation(self, instance):
