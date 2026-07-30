@@ -167,3 +167,101 @@ class DailyGoal(models.Model):
             self.completed = True
         
         self.save()
+
+
+class PracticeSession(models.Model):
+    STATUS_ACTIVE = 'active'
+    STATUS_COMPLETED = 'completed'
+    STATUS_ABANDONED = 'abandoned'
+
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_ABANDONED, 'Abandoned'),
+    ]
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='practice_sessions'
+    )
+    topic = models.ForeignKey(
+        Topic,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='practice_sessions'
+    )
+    session_type = models.CharField(max_length=32, default='mixed')
+    requested_count = models.PositiveSmallIntegerField(default=10)
+    settings = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'status'], name='idx_practice_user_status'),
+            models.Index(fields=['user', 'created_at'], name='idx_practice_user_created'),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username}: {self.session_type} ({self.status})"
+
+    def update_status_from_attempts(self):
+        if self.status != self.STATUS_ACTIVE:
+            return
+
+        has_pending = self.attempts.filter(is_correct__isnull=True).exists()
+        if not has_pending:
+            self.status = self.STATUS_COMPLETED
+            self.completed_at = timezone.now()
+            self.save(update_fields=['status', 'completed_at'])
+
+
+class ExerciseAttempt(models.Model):
+    session = models.ForeignKey(
+        PracticeSession,
+        on_delete=models.CASCADE,
+        related_name='attempts'
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='exercise_attempts'
+    )
+    word = models.ForeignKey(
+        Word,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='exercise_attempts'
+    )
+    exercise_type = models.CharField(max_length=32)
+    order = models.PositiveSmallIntegerField(default=0)
+    public_payload = models.JSONField(default=dict)
+    grading_payload = models.JSONField(default=dict)
+    answer = models.JSONField(null=True, blank=True)
+    is_correct = models.BooleanField(null=True, blank=True)
+    time_spent = models.FloatField(default=0)
+    rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['session', 'order']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['session', 'order'],
+                name='unique_session_attempt_order'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['user', 'is_correct'], name='idx_attempt_user_correct'),
+            models.Index(fields=['session', 'order'], name='idx_attempt_session_order'),
+        ]
+
+    def __str__(self):
+        status = 'pending' if self.is_correct is None else str(self.is_correct)
+        return f"{self.user.username}: {self.exercise_type} #{self.order} ({status})"
