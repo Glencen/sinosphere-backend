@@ -289,6 +289,7 @@ class UserWordDetailSerializer(serializers.ModelSerializer):
 
 class UserWordListSerializer(serializers.ModelSerializer):
     word_info = WordSerializer(source='word', read_only=True)
+    word = serializers.SerializerMethodField()
     mastery_score = serializers.FloatField(read_only=True)
     is_learned = serializers.BooleanField(read_only=True)
     review_urgency = serializers.SerializerMethodField()
@@ -302,6 +303,16 @@ class UserWordListSerializer(serializers.ModelSerializer):
             'total_attempts', 'correct_attempts', 'avg_response_time',
             'review_urgency',
         ]
+
+    def get_word(self, obj):
+        word = obj.word
+        return {
+            'id': word.id,
+            'hanzi': word.hanzi,
+            'pinyin': word.pinyin_graphic,
+            'pinyin_graphic': word.pinyin_graphic,
+            'translation': word.translation,
+        }
 
     def get_review_urgency(self, obj):
         return obj.get_review_urgency()
