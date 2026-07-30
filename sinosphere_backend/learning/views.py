@@ -241,7 +241,7 @@ class SubmitExerciseView(APIView):
         }
         
         if exercise_type == 'translation_ru':
-            user_answer_clean = user_answer.strip().lower()
+            user_answer_clean = str(user_answer).strip().lower()
             
             translations = [t.strip().lower() for t in word.translation.split(';')]
             
@@ -254,7 +254,7 @@ class SubmitExerciseView(APIView):
                 result['explanation'] = f"Правильный перевод: {translations[0]}"
         
         elif exercise_type == 'translation_cn':
-            user_answer_clean = user_answer.strip()
+            user_answer_clean = str(user_answer).strip()
             correct_answer = word.hanzi
             
             if user_answer_clean == correct_answer:
