@@ -214,6 +214,9 @@ class SubmitExerciseView(APIView):
         
         data = serializer.validated_data
         user = request.user
+
+        if data.get('attempt_id'):
+            return self._submit_attempt(user, data)
         
         check_result = self._check_answer(
             data['exercise_type'],
@@ -280,6 +283,138 @@ class SubmitExerciseView(APIView):
             'consecutive_correct': user_word.consecutive_correct
         })
     
+    @transaction.atomic
+    def _submit_attempt(self, user, data):
+        attempt = get_object_or_404(
+            ExerciseAttempt.objects.select_related('session', 'word'),
+            id=data['attempt_id'],
+            user=user
+        )
+
+        if attempt.is_correct is not None:
+            return Response(
+                {'error': 'Exercise attempt has already been submitted.'},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        word = attempt.word
+        if not word:
+            return Response(
+                {'error': 'Exercise attempt has no word.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        response_time = data.get('time_spent', 0)
+        check_result = self._check_attempt_answer(attempt, data['answer'])
+        is_correct = check_result['is_correct']
+        exercise_type = attempt.exercise_type
+
+        user_word, created = UserWord.objects.get_or_create(
+            user=user,
+            word=word,
+            defaults={
+                'due': timezone.now(),
+                'state': 0,
+                'difficulty': 8.0,
+            }
+        )
+
+        rating = user_word.update_review(is_correct, response_time, exercise_type)
+
+        UserExerciseHistory.objects.create(
+            user=user,
+            exercise_type=exercise_type,
+            word=word,
+            is_correct=is_correct,
+            time_spent=response_time,
+            difficulty=word.difficulty
+        )
+
+        attempt.answer = data['answer']
+        attempt.is_correct = is_correct
+        attempt.time_spent = response_time
+        attempt.rating = rating
+        attempt.submitted_at = timezone.now()
+        attempt.save(update_fields=[
+            'answer', 'is_correct', 'time_spent', 'rating', 'submitted_at'
+        ])
+
+        attempt.session.update_status_from_attempts()
+
+        self._update_daily_goal(user, response_time, xp=15 if is_correct else 5)
+        self._update_learning_stats(user, is_correct, response_time)
+        self._update_topic_progress(user, word, is_correct)
+
+        return Response({
+            'attempt_id': attempt.id,
+            'session_id': attempt.session_id,
+            'is_correct': is_correct,
+            'correct_answer': check_result.get('correct_answer'),
+            'explanation': check_result.get('explanation'),
+            'rating': rating,
+            'next_review': user_word.due,
+            'mastery_score': user_word.mastery_score,
+            'xp_earned': 15 if is_correct else 5,
+            'is_learned': user_word.is_learned,
+            'consecutive_correct': user_word.consecutive_correct
+        })
+
+    def _check_attempt_answer(self, attempt, user_answer):
+        word = attempt.word
+        exercise_type = attempt.exercise_type
+        grading = attempt.grading_payload or {}
+
+        result = {
+            'is_correct': False,
+            'correct_answer': '',
+            'explanation': ''
+        }
+
+        if exercise_type == 'translation_ru':
+            translations = [_normalize_text(item) for item in word.translation.split(';') if item.strip()]
+            correct_answer = grading.get('correct_answer') or _first_translation(word.translation)
+            result['correct_answer'] = correct_answer
+            result['is_correct'] = _normalize_text(user_answer) in translations
+            if not result['is_correct']:
+                result['explanation'] = f"Correct translation: {correct_answer}"
+
+        elif exercise_type == 'translation_cn':
+            correct_answer = grading.get('correct_answer') or word.hanzi
+            result['correct_answer'] = correct_answer
+            result['is_correct'] = str(user_answer or '').strip() == correct_answer
+            if not result['is_correct']:
+                result['explanation'] = f"Correct answer: {correct_answer} ({word.pinyin_graphic})"
+
+        elif exercise_type == 'multiple_choice':
+            options = grading.get('options') or []
+            correct_index = grading.get('correct_index')
+            try:
+                correct_index = int(correct_index)
+                if 0 <= correct_index < len(options):
+                    result['correct_answer'] = options[correct_index]
+                result['is_correct'] = int(user_answer) == correct_index
+            except (TypeError, ValueError):
+                result['is_correct'] = False
+
+        elif exercise_type == 'matching':
+            pairs = grading.get('pairs') or []
+            expected = [_normalize_text(pair.get('translation')) for pair in pairs]
+            submitted = [_normalize_text(answer) for answer in user_answer] if isinstance(user_answer, list) else []
+            result['correct_answer'] = '; '.join(pair.get('translation', '') for pair in pairs)
+            result['is_correct'] = bool(expected) and submitted == expected
+            if not result['is_correct']:
+                result['explanation'] = 'Not all pairs were matched correctly.'
+
+        elif exercise_type == 'writing':
+            correct_answer = grading.get('correct_answer') or word.hanzi
+            result['correct_answer'] = correct_answer
+            answer_text = str(user_answer or '').strip()
+            result['is_correct'] = not answer_text or answer_text == correct_answer
+            if not result['is_correct']:
+                result['explanation'] = f"Correct answer: {correct_answer}"
+
+        return result
+
     def _check_answer(self, exercise_type, user_answer, word_id, exercise_data=None):
         """Проверить правильность ответа"""
         try:
