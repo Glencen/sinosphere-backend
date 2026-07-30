@@ -204,3 +204,36 @@ class GeneratedExerciseSerializer(serializers.Serializer):
                     for pair in data.get('pairs', [])
                 ]
         return data
+
+
+class ExerciseAttemptSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExerciseAttempt
+        fields = [
+            'id', 'session', 'word', 'exercise_type', 'order',
+            'public_payload', 'answer', 'is_correct', 'time_spent',
+            'rating', 'created_at', 'submitted_at'
+        ]
+        read_only_fields = fields
+
+
+class PracticeSessionSerializer(serializers.ModelSerializer):
+    exercises = serializers.SerializerMethodField()
+    count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PracticeSession
+        fields = [
+            'id', 'session_type', 'topic', 'requested_count', 'settings',
+            'status', 'created_at', 'completed_at', 'exercises', 'count'
+        ]
+        read_only_fields = fields
+
+    def get_exercises(self, obj):
+        return [
+            attempt.public_payload
+            for attempt in obj.attempts.all().order_by('order')
+        ]
+
+    def get_count(self, obj):
+        return obj.attempts.count()
