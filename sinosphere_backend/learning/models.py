@@ -128,10 +128,10 @@ class DailyGoal(models.Model):
     """
     Дневная цель пользователя
     """
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
-        related_name='daily_goal'
+        related_name='daily_goals'
     )
     target_xp = models.IntegerField(default=100, verbose_name='Цель по XP')
     target_words = models.IntegerField(default=10, verbose_name='Цель по словам')
@@ -145,6 +145,12 @@ class DailyGoal(models.Model):
     class Meta:
         verbose_name = 'Дневная цель'
         verbose_name_plural = 'Дневные цели'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'date'],
+                name='unique_user_daily_goal'
+            )
+        ]
     
     def __str__(self):
         return f"{self.user.username} - {self.date}"
