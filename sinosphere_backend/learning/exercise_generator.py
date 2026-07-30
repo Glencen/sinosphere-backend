@@ -158,18 +158,41 @@ class ExerciseGenerator:
     
     def _generate_exercise(self, exercise_type: str, words: List[Word]) -> Dict:
         """Сгенерировать конкретное задание"""
+        exercise = {}
+        
         if exercise_type == 'translation_ru':
-            return self._generate_translation_exercise(words[0], direction='cn_to_ru')
+            exercise = self._generate_translation_exercise(words[0], direction='cn_to_ru')
+            exercise['type'] = 'translation_ru'
         elif exercise_type == 'translation_cn':
-            return self._generate_translation_exercise(words[0], direction='ru_to_cn')
+            exercise = self._generate_translation_exercise(words[0], direction='ru_to_cn')
+            exercise['type'] = 'translation_cn'
         elif exercise_type == 'matching':
-            return self._generate_matching_exercise(words)
+            exercise = self._generate_matching_exercise(words)
+            exercise['type'] = 'matching'
+            exercise['word_id'] = words[0].id if words else 0
+            exercise['difficulty'] = 2
+            if 'question' not in exercise:
+                exercise['question'] = exercise.get('instructions', 'Сопоставьте китайские слова с их переводами')
         elif exercise_type == 'multiple_choice':
-            return self._generate_multiple_choice_exercise(words[0])
+            exercise = self._generate_multiple_choice_exercise(words[0])
+            exercise['type'] = 'multiple_choice'
         elif exercise_type == 'writing':
-            return self._generate_writing_exercise(words[0])
+            exercise = self._generate_writing_exercise(words[0])
+            exercise['type'] = 'writing'
+            if 'question' not in exercise:
+                exercise['question'] = exercise.get('instructions', 'Напишите иероглифы правильно')
         else:
-            return self._generate_translation_exercise(words[0], direction='cn_to_ru')
+            exercise = self._generate_translation_exercise(words[0], direction='cn_to_ru')
+            exercise['type'] = 'translation_ru'
+        
+        exercise.setdefault('word_id', words[0].id if words else 0)
+        exercise.setdefault('question', '')
+        exercise.setdefault('difficulty', 1)
+        exercise.setdefault('options', [])
+        exercise.setdefault('hint', '')
+        exercise.setdefault('pairs', [])
+        
+        return exercise
     
     def _generate_translation_exercise(self, word: Word, direction: str) -> Dict:
         """Сгенерировать задание на перевод"""
@@ -213,9 +236,12 @@ class ExerciseGenerator:
         
         return {
             'type': 'matching',
+            'word_id': words[0].id,
             'pairs': pairs,
             'correct_pairs': correct_pairs,
-            'instructions': 'Сопоставьте китайские слова с их переводами'
+            'instructions': 'Сопоставьте китайские слова с их переводами',
+            'question': 'Сопоставьте китайские слова с их переводами',
+            'difficulty': 2
         }
     
     def _generate_multiple_choice_exercise(self, word: Word) -> Dict:
@@ -243,11 +269,13 @@ class ExerciseGenerator:
         return {
             'type': 'writing',
             'word_id': word.id,
+            'question': 'Напишите иероглифы правильно',
             'hanzi': word.hanzi,
             'pinyin': word.pinyin_graphic,
             'translation': self._get_random_translation(word.translation),
             'stroke_data': self._get_stroke_data(word),
-            'instructions': 'Повторите написание иероглифов в правильной последовательности'
+            'instructions': 'Повторите написание иероглифов в правильной последовательности',
+            'difficulty': word.difficulty
         }
     
     def _get_random_translation(self, translation_text: str) -> str:
