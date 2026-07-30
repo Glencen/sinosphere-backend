@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Lesson, Exercise, UserLessonProgress, DailyGoal
+from .models import (
+    Lesson, Exercise, UserLessonProgress, DailyGoal,
+    PracticeSession, ExerciseAttempt
+)
 from dictionary.serializers import WordSerializer, TopicSerializer
 from users.models import UserLearningStats, UserTopicProgress
 
@@ -109,15 +112,25 @@ class TopicProgressSerializer(serializers.ModelSerializer):
 
 
 class ExerciseSubmissionSerializer(serializers.Serializer):
+    attempt_id = serializers.IntegerField(required=False)
     exercise_id = serializers.IntegerField(required=False)
-    word_id = serializers.IntegerField(required=True)
+    word_id = serializers.IntegerField(required=False)
     answer = serializers.JSONField(required=True)
-    exercise_type = serializers.CharField(required=True)
+    exercise_type = serializers.CharField(required=False)
     time_spent = serializers.FloatField(default=0)
     exercise_data = serializers.JSONField(required=False)
     
     def validate(self, data):
         from dictionary.models import Word
+
+        if data.get('attempt_id'):
+            return data
+
+        if not data.get('word_id') or not data.get('exercise_type'):
+            raise serializers.ValidationError({
+                'attempt_id': 'attempt_id is required for generated practice exercises.'
+            })
+
         try:
             word = Word.objects.get(id=data['word_id'])
         except Word.DoesNotExist:
@@ -160,6 +173,8 @@ class LearningStatsSerializer(serializers.ModelSerializer):
 
 
 class GeneratedExerciseSerializer(serializers.Serializer):
+    attempt_id = serializers.IntegerField(required=False)
+    session_id = serializers.IntegerField(required=False)
     type = serializers.CharField()
     question = serializers.CharField(required=False, allow_blank=True)
     word_id = serializers.IntegerField()
@@ -176,4 +191,16 @@ class GeneratedExerciseSerializer(serializers.Serializer):
         data = super().to_representation(instance)
         if 'correct_answer' in data and self.context.get('hide_answer', True):
             del data['correct_answer']
+        if self.context.get('hide_answer', True):
+            data.pop('correct_index', None)
+            data.pop('correct_pairs', None)
+            if 'pairs' in data:
+                data['pairs'] = [
+                    {
+                        key: value
+                        for key, value in pair.items()
+                        if key != 'translation'
+                    }
+                    for pair in data.get('pairs', [])
+                ]
         return data
