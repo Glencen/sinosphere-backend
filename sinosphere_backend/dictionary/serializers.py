@@ -253,8 +253,8 @@ class WordPartOfSpeechSerializer(serializers.ModelSerializer):
 
 
 class WordSerializer(serializers.ModelSerializer):
-    tags = WordTagSerializer(many=True, read_only=True, source='wordtags')
-    parts_of_speech = WordPartOfSpeechSerializer(many=True, read_only=True, source='wordpartsofspeech')
+    tags = WordTagSerializer(many=True, read_only=True, source='word_tags')
+    parts_of_speech = WordPartOfSpeechSerializer(many=True, read_only=True)
     components = WordCompositionSerializer(many=True, read_only=True)
     used_in_words = WordCompositionSerializer(many=True, read_only=True)
     topics = serializers.SerializerMethodField()
@@ -304,7 +304,7 @@ class WordSerializer(serializers.ModelSerializer):
         instance.save()
         
         if tag_names is not None:
-            instance.tags.all().delete()
+            instance.word_tags.all().delete()
             self._create_related_records(instance, tag_names, [])
         
         if part_of_speech_names is not None:

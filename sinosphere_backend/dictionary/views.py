@@ -131,7 +131,7 @@ class WordsByTopicView(APIView):
         tag_ids = topic.tags.values_list('id', flat=True)
         
         words = Word.objects.filter(
-            wordtags__tag_id__in=tag_ids
+            word_tags__tag_id__in=tag_ids
         ).distinct()
         
         serializer = WordSerializer(words, many=True)
@@ -448,7 +448,7 @@ class WordSearchView(APIView):
         
         tag = query_params.get('tag')
         if tag:
-            queryset = queryset.filter(tags__tag__name=tag)
+            queryset = queryset.filter(word_tags__tag__name=tag)
         
         part_of_speech = query_params.get('part_of_speech')
         if part_of_speech:
@@ -473,7 +473,7 @@ class WordTagsView(APIView):
     """
     def get(self, request, word_id):
         word = get_object_or_404(Word, pk=word_id)
-        word_tags = word.tags.all()
+        word_tags = word.word_tags.all()
         serializer = WordTagsSerializer(word_tags, many=True)
         return Response(serializer.data)
     
