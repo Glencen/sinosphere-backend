@@ -277,12 +277,17 @@ class SubmitExerciseView(APIView):
         
         elif exercise_type == 'matching':
             if isinstance(user_answer, list) and exercise_data:
-                # user_answer: список пар [индекс_китайского, индекс_перевода]
-                # exercise_data['correct_pairs']: список правильных пар
-                correct_pairs = exercise_data.get('correct_pairs', [])
-                user_pairs = user_answer
-                
-                if sorted(correct_pairs) == sorted(user_pairs):
+                pairs = exercise_data.get('pairs') or []
+                expected_translations = [
+                    str(pair.get('translation', '')).strip().lower()
+                    for pair in pairs
+                ]
+                submitted_translations = [
+                    str(answer).strip().lower()
+                    for answer in user_answer
+                ]
+
+                if expected_translations and submitted_translations == expected_translations:
                     result['is_correct'] = True
                 else:
                     result['is_correct'] = False
