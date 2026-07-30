@@ -854,16 +854,42 @@ class PracticeSessionView(APIView):
     """
     permission_classes = [IsAuthenticated]
     
+    @transaction.atomic
     def post(self, request):
         topic_id = request.data.get('topic_id')
         session_type = request.data.get('type', 'mixed')
-        count = int(request.data.get('count', 10))
+        requested_count = int(request.data.get('count', 10))
+        count = max(1, min(requested_count, 50))
+        exercise_types = request.data.get('exercise_types') or []
+        include_review = request.data.get('includeReview', True)
+        include_new = request.data.get('includeNew', True)
+
+        topic = None
+        if topic_id:
+            topic = get_object_or_404(Topic, id=topic_id)
+
+        session = PracticeSession.objects.create(
+            user=request.user,
+            topic=topic,
+            session_type=session_type,
+            requested_count=count,
+            settings={
+                'topic_id': topic_id,
+                'type': session_type,
+                'count': count,
+                'exercise_types': exercise_types,
+                'includeReview': include_review,
+                'includeNew': include_new,
+            }
+        )
         
         generator = ExerciseGenerator(request.user, topic_id)
         exercises = []
         
         for _ in range(count):
-            if session_type == 'review':
+            if exercise_types:
+                exercise_type = random.choice(exercise_types)
+            elif session_type == 'review':
                 exercise_type = random.choice(['translation_ru', 'multiple_choice'])
             elif session_type == 'new':
                 exercise_type = random.choice(['translation_cn', 'matching'])
@@ -875,22 +901,60 @@ class PracticeSessionView(APIView):
                 if 'word_id' in exercise and session_type != 'review':
                     word = Word.objects.get(id=exercise['word_id'])
                     generator.auto_add_word_to_dictionary(word)
-                
-                exercises.append(exercise)
-        
-        serializer = GeneratedExerciseSerializer(
-            exercises,
-            many=True,
-            context={'hide_answer': True}
-        )
-        
-        session_id = f"session_{request.user.id}_{int(timezone.now().timestamp())}"
+
+                attempt = ExerciseAttempt.objects.create(
+                    session=session,
+                    user=request.user,
+                    word_id=exercise.get('word_id') or None,
+                    exercise_type=exercise.get('type') or exercise_type or 'translation_ru',
+                    order=len(exercises),
+                    public_payload={},
+                    grading_payload=_grading_payload(exercise)
+                )
+
+                public_payload = _public_exercise_payload(
+                    exercise,
+                    attempt_id=attempt.id,
+                    session_id=session.id
+                )
+                attempt.public_payload = public_payload
+                attempt.save(update_fields=['public_payload'])
+
+                exercises.append(public_payload)
         
         return Response({
-            'session_id': session_id,
-            'exercises': serializer.data,
+            'session_id': session.id,
+            'exercises': exercises,
             'count': len(exercises),
-            'type': session_type
+            'type': session.session_type,
+            'status': session.status
+        })
+
+
+class PracticeSessionDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        session = get_object_or_404(
+            PracticeSession.objects.prefetch_related('attempts'),
+            id=session_id,
+            user=request.user
+        )
+
+        exercises = [
+            attempt.public_payload
+            for attempt in session.attempts.filter(is_correct__isnull=True).order_by('order')
+        ]
+
+        return Response({
+            'session_id': session.id,
+            'exercises': exercises,
+            'count': len(exercises),
+            'type': session.session_type,
+            'status': session.status,
+            'settings': session.settings,
+            'created_at': session.created_at,
+            'completed_at': session.completed_at
         })
     
 class LearningDashboardView(APIView):
