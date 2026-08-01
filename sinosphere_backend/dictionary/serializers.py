@@ -258,6 +258,7 @@ class WordSerializer(serializers.ModelSerializer):
     components = WordCompositionSerializer(many=True, read_only=True)
     used_in_words = WordCompositionSerializer(many=True, read_only=True)
     topics = serializers.SerializerMethodField()
+    pinyin = serializers.CharField(source='pinyin_graphic', read_only=True)
     
     tag_names = serializers.ListField(
         child=serializers.CharField(),
@@ -273,7 +274,7 @@ class WordSerializer(serializers.ModelSerializer):
     class Meta:
         model = Word
         fields = [
-            'id', 'hanzi', 'pinyin_numeric', 'pinyin_graphic', 
+            'id', 'hanzi', 'pinyin', 'pinyin_numeric', 'pinyin_graphic', 
             'translation', 'difficulty', 'tags', 'parts_of_speech',
             'components', 'used_in_words', 'topics', 'tag_names', 
             'part_of_speech_names'
@@ -346,3 +347,4 @@ class ExampleSentenceSerializer(serializers.ModelSerializer):
             'id', 'word', 'word_info', 'chinese_sentence', 'pinyin_sentence',
             'translation', 'difficulty'
         ]
+
