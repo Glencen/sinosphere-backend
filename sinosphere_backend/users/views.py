@@ -120,39 +120,6 @@ class UserWordListView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class UserWordLegacyDetailView(APIView):
-    """
-    Детальное представление, обновление и удаление слова пользователя (старая версия)
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def get_object(self, pk, user):
-        return get_object_or_404(UserWord, pk=pk, user=user)
-    
-    def get(self, request, pk):
-        user_word = self.get_object(pk, request.user)
-        serializer = UserWordListSerializer(user_word)
-        return Response(serializer.data)
-    
-    def put(self, request, pk):
-        user_word = self.get_object(pk, request.user)
-        serializer = UserWordListSerializer(
-            user_word, 
-            data=request.data,
-            context={'request': request},
-            partial=True
-        )
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    def delete(self, request, pk):
-        user_word = self.get_object(pk, request.user)
-        user_word.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
 class UserWordReviewView(APIView):
     """
     Обработка повторения слова по системе интервального повторения
@@ -171,23 +138,6 @@ class UserWordReviewView(APIView):
             return Response(UserWordSerializer(user_word).data)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class WordsForReviewView(APIView):
-    """
-    Получение слов для повторения на сегодня
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def get(self, request):
-        words_for_review = UserWord.objects.filter(
-            user=request.user,
-            due__lte=timezone.now(),
-            state__in=[1, 2, 3]
-        ).select_related('word').order_by('due')
-
-        serializer = UserWordSerializer(words_for_review, many=True)
-        return Response(serializer.data)
 
 
 class UserStatsView(APIView):
@@ -445,6 +395,15 @@ class UserWordDetailView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        user_word = get_object_or_404(
+            UserWord,
+            pk=pk,
+            user=request.user
+        )
+        user_word.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class WordsForReviewView(APIView):

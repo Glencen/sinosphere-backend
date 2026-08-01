@@ -61,8 +61,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 class UserWordSerializer(serializers.ModelSerializer):
     word = serializers.SerializerMethodField()
-    word_info = serializers.SerializerMethodField()
-    word_detail = serializers.SerializerMethodField()
     word_id = serializers.IntegerField(write_only=True, required=False)
     mastery_score = serializers.FloatField(read_only=True)
     is_learned = serializers.BooleanField(read_only=True)
@@ -71,7 +69,7 @@ class UserWordSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserWord
         fields = [
-            'id', 'user', 'word', 'word_info', 'word_detail', 'word_id', 'added_date', 'notes',
+            'id', 'user', 'word', 'word_id', 'added_date', 'notes',
             'due', 'stability', 'difficulty', 'elapsed_days', 'scheduled_days',
             'reps', 'lapses', 'state', 'last_review', 'total_attempts',
             'correct_attempts', 'avg_response_time', 'consecutive_correct',
@@ -88,11 +86,7 @@ class UserWordSerializer(serializers.ModelSerializer):
     def get_word(self, obj):
         return _word_payload(obj.word)
 
-    def get_word_info(self, obj):
-        return _word_payload(obj.word)
 
-    def get_word_detail(self, obj):
-        return _word_payload(obj.word)
 
     def get_review_urgency(self, obj):
         return obj.get_review_urgency()
@@ -204,7 +198,6 @@ class UserTopicProgressSerializer(serializers.ModelSerializer):
 class UserExerciseHistorySerializer(serializers.ModelSerializer):
     user = serializers.StringRelatedField(read_only=True)
     word = serializers.SerializerMethodField()
-    word_info = serializers.SerializerMethodField()
     topic_info = serializers.SerializerMethodField()
     exercise_type_display = serializers.SerializerMethodField()
     timestamp = serializers.DateTimeField(source='created_at', read_only=True)
@@ -213,7 +206,7 @@ class UserExerciseHistorySerializer(serializers.ModelSerializer):
         model = UserExerciseHistory
         fields = [
             'id', 'user', 'exercise_type', 'exercise_type_display',
-            'word', 'word_info', 'topic', 'topic_info', 'is_correct',
+            'word', 'topic', 'topic_info', 'is_correct',
             'time_spent', 'difficulty', 'timestamp', 'created_at',
         ]
         read_only_fields = ['user', 'created_at']
@@ -221,8 +214,6 @@ class UserExerciseHistorySerializer(serializers.ModelSerializer):
     def get_word(self, obj):
         return _word_payload(obj.word)
 
-    def get_word_info(self, obj):
-        return _word_payload(obj.word)
 
     def get_exercise_type_display(self, obj):
         return dict(UserExerciseHistory.EXERCISE_TYPES).get(obj.exercise_type, obj.exercise_type)
@@ -236,14 +227,13 @@ class UserExerciseHistorySerializer(serializers.ModelSerializer):
 class ReviewLogSerializer(serializers.ModelSerializer):
     user_word_info = serializers.SerializerMethodField()
     rating_display = serializers.SerializerMethodField()
-    word_info = serializers.SerializerMethodField()
 
     class Meta:
         model = ReviewLog
         fields = [
             'id', 'user_word', 'user_word_info', 'rating', 'rating_display',
             'is_correct', 'response_time', 'exercise_type', 'review_date',
-            'scheduled_days', 'word_info',
+            'scheduled_days', 'word',
         ]
         read_only_fields = ['review_date']
 
@@ -265,14 +255,10 @@ class ReviewLogSerializer(serializers.ModelSerializer):
         }
         return rating_map.get(obj.rating, str(obj.rating))
 
-    def get_word_info(self, obj):
-        return _word_payload(obj.user_word.word)
 
 
 class UserWordDetailSerializer(serializers.ModelSerializer):
     word = serializers.SerializerMethodField()
-    word_info = serializers.SerializerMethodField()
-    word_detail = serializers.SerializerMethodField()
     user = serializers.StringRelatedField(read_only=True)
     mastery_score = serializers.FloatField(read_only=True)
     is_learned = serializers.BooleanField(read_only=True)
@@ -283,7 +269,7 @@ class UserWordDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserWord
         fields = [
-            'id', 'user', 'word', 'word_info', 'word_detail', 'added_date', 'notes',
+            'id', 'user', 'word', 'added_date', 'notes',
             'due', 'stability', 'difficulty', 'elapsed_days', 'scheduled_days',
             'reps', 'lapses', 'state', 'last_review', 'total_attempts',
             'correct_attempts', 'avg_response_time', 'consecutive_correct',
@@ -302,11 +288,7 @@ class UserWordDetailSerializer(serializers.ModelSerializer):
     def get_word(self, obj):
         return _word_payload(obj.word)
 
-    def get_word_info(self, obj):
-        return _word_payload(obj.word)
 
-    def get_word_detail(self, obj):
-        return _word_payload(obj.word)
 
     def get_next_review_days(self, obj):
         if obj.due and obj.due > timezone.now():
@@ -323,8 +305,6 @@ class UserWordDetailSerializer(serializers.ModelSerializer):
 
 class UserWordListSerializer(serializers.ModelSerializer):
     word = serializers.SerializerMethodField()
-    word_info = serializers.SerializerMethodField()
-    word_detail = serializers.SerializerMethodField()
     mastery_score = serializers.FloatField(read_only=True)
     is_learned = serializers.BooleanField(read_only=True)
     review_urgency = serializers.SerializerMethodField()
@@ -333,7 +313,7 @@ class UserWordListSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserWord
         fields = [
-            'id', 'word', 'word_info', 'word_detail', 'state', 'due', 'next_review',
+            'id', 'word', 'state', 'due', 'next_review',
             'last_review', 'reps', 'lapses', 'mastery_score', 'is_learned',
             'total_attempts', 'correct_attempts', 'avg_response_time',
             'review_urgency',
@@ -342,11 +322,7 @@ class UserWordListSerializer(serializers.ModelSerializer):
     def get_word(self, obj):
         return _word_payload(obj.word)
 
-    def get_word_info(self, obj):
-        return _word_payload(obj.word)
 
-    def get_word_detail(self, obj):
-        return _word_payload(obj.word)
 
     def get_review_urgency(self, obj):
         return obj.get_review_urgency()
