@@ -8,4 +8,5 @@ urlpatterns = [
     path('practice-sessions/<int:session_id>/current-exercise/', views.PracticeSessionCurrentExerciseView.as_view(), name='practice-session-current-exercise-api'),
     path('practice-sessions/<int:session_id>/summary/', views.PracticeSessionSummaryView.as_view(), name='practice-session-summary-api'),
     path('exercise-attempts/<int:attempt_id>/submit/', views.ExerciseAttemptSubmitView.as_view(), name='exercise-attempt-submit-api'),
+    path('exercise-attempts/<int:attempt_id>/result/', views.ExerciseAttemptResultView.as_view(), name='exercise-attempt-result-api'),
 ]

@@ -27,7 +27,7 @@ from .application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUse
 from .application.sessions import (
     GetCurrentExerciseUseCase, GetPracticeSessionUseCase,
     GetPracticeSessionSummaryUseCase, StartPracticeSessionUseCase,
-    public_attempt_payload, session_dto, session_progress
+    exercise_attempt_result_dto, public_attempt_payload, session_dto, session_progress
 )
 from .exercises import registry as exercise_handler_registry
 from .exercises.exceptions import ExerciseAttemptAccessDeniedError, ExerciseAttemptExpiredError, InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
@@ -1276,3 +1276,15 @@ class ExerciseAttemptSubmitView(APIView):
         payload['session_status'] = result.attempt.session.status
         payload['progress'] = session_progress(result.attempt.session)
         return Response(payload)
+
+
+class ExerciseAttemptResultView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, attempt_id):
+        try:
+            attempt = ExerciseAttempt.objects.select_related('session').get(id=attempt_id, user=request.user)
+        except ExerciseAttempt.DoesNotExist:
+            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(exercise_attempt_result_dto(attempt))
