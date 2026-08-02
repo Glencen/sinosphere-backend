@@ -1,4 +1,3 @@
-import random
 from datetime import timedelta
 from django.utils import timezone
 from django.db.models import Q, Count, Avg
@@ -10,23 +9,14 @@ from rest_framework.decorators import permission_classes, api_view
 from django.shortcuts import get_object_or_404
 from .models import (
     Lesson, Exercise, UserLessonProgress, DailyGoal,
-    PracticeSession, ExerciseAttempt
+    MemoryCard
 )
 from dictionary.models import Topic, Word, WordTag
 from users.models import UserWord, UserLearningStats, UserTopicProgress, UserExerciseHistory
 from .serializers import (
     LessonSerializer, ExerciseSerializer, UserLessonProgressSerializer,
-    DailyGoalSerializer, TopicProgressSerializer, LearningStatsSerializer,
-    PracticeSessionCreateSerializer, ExerciseAttemptSubmitSerializer
+    DailyGoalSerializer, TopicProgressSerializer, LearningStatsSerializer
 )
-from .fsrs_optimizer import FSRSOptimizer
-from .application.use_cases import SubmitExerciseAnswerUseCase
-from .application.sessions import (
-    GetCurrentExerciseUseCase, GetPracticeSessionUseCase,
-    GetPracticeSessionSummaryUseCase, StartPracticeSessionUseCase,
-    exercise_attempt_result_dto, public_attempt_payload, session_dto, session_progress
-)
-from .exercises.exceptions import ExerciseAttemptAccessDeniedError, ExerciseAttemptExpiredError, InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
 
 
 
@@ -128,35 +118,40 @@ class StartLessonView(APIView):
 
 
 class ReviewScheduleView(APIView):
-    """
-    Получение расписания повторений
-    """
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
-        user_words = UserWord.objects.filter(user=request.user)
-        
-        fsrs = FSRSOptimizer()
-        schedule = fsrs.get_review_schedule(user_words)
-        
-        schedule_serialized = {}
-        for key, words in schedule.items():
-            schedule_serialized[key] = [
-                {
-                    'id': word.id,
-                    'word': word.word.hanzi,
-                    'pinyin': word.word.pinyin_graphic,
-                    'translation': word.word.translation.split(';')[0].strip(),
-                    'next_review': word.due,
-                    'stability': word.stability,
-                    'difficulty': word.difficulty,
-                    'reps': word.reps,
-                    'state': word.state
-                }
-                for word in words[:10]
-            ]
-        
-        return Response(schedule_serialized)
+        now = timezone.now()
+        tomorrow = now + timedelta(days=1)
+        next_week = now + timedelta(days=7)
+        two_weeks = now + timedelta(days=14)
+
+        cards = MemoryCard.objects.filter(user=request.user).select_related('learning_item').order_by('due_at')
+        buckets = {
+            'overdue': cards.filter(due_at__lte=now),
+            'today': cards.filter(due_at__gt=now, due_at__date=now.date()),
+            'tomorrow': cards.filter(due_at__gt=now, due_at__lte=tomorrow),
+            'week': cards.filter(due_at__gt=tomorrow, due_at__lte=next_week),
+            'later': cards.filter(due_at__gt=next_week, due_at__lte=two_weeks),
+        }
+
+        def card_payload(card):
+            word = card.learning_item
+            return {
+                'id': card.id,
+                'word': word.hanzi,
+                'word_id': word.id,
+                'pinyin': word.pinyin_graphic,
+                'translation': word.translation.split(';')[0].strip(),
+                'direction': card.direction,
+                'next_review': card.due_at,
+                'last_review': card.last_review_at,
+            }
+
+        return Response({
+            key: [card_payload(card) for card in queryset[:10]]
+            for key, queryset in buckets.items()
+        })
 
 
 class LearningStatsView(APIView):
@@ -169,6 +164,7 @@ class LearningStatsView(APIView):
         user = request.user
         
         user_words = UserWord.objects.filter(user=user)
+        memory_cards = MemoryCard.objects.filter(user=user)
         
         stats, _ = UserLearningStats.objects.get_or_create(user=user)
         stats_serializer = LearningStatsSerializer(stats)
@@ -206,17 +202,16 @@ class LearningStatsView(APIView):
             avg_time=Avg('time_spent')
         )
         
-        today_reviews = UserWord.objects.filter(
+        today_reviews = memory_cards.filter(
             user=user,
-            due__lte=timezone.now()
+            due_at__lte=timezone.now()
         ).count()
         
         total_words = user_words.count()
         
-        learned_words_count = 0
-        for user_word in user_words:
-            if user_word.is_learned:
-                learned_words_count += 1
+        learned_words_count = memory_cards.filter(
+            reviews__isnull=False,
+        ).values('learning_item').distinct().count()
         
         return Response({
             'stats': stats_serializer.data,
@@ -382,12 +377,12 @@ class LearningDashboardView(APIView):
         user = request.user
         
         user_words = UserWord.objects.filter(user=user)
+        memory_cards = MemoryCard.objects.filter(user=user)
         stats, _ = UserLearningStats.objects.get_or_create(user=user)
         
-        learned_words_count = 0
-        for user_word in user_words:
-            if user_word.is_learned:
-                learned_words_count += 1
+        learned_words_count = memory_cards.filter(
+            reviews__isnull=False,
+        ).values('learning_item').distinct().count()
         
         stats_data = {
             'total_words': user_words.count(),
@@ -426,9 +421,9 @@ class LearningDashboardView(APIView):
             'date': daily_goal.date
         }
         
-        words_for_review = UserWord.objects.filter(
+        words_for_review = memory_cards.filter(
             user=user,
-            due__lte=timezone.now()
+            due_at__lte=timezone.now()
         ).count()
         
         topics = UserTopicProgress.objects.filter(
@@ -462,119 +457,5 @@ class LearningDashboardView(APIView):
             'success': True
         })
     
-    def _get_learned_words_count(self, user):
-        """
-        Определяем количество изученных слов.
-        """
-        user_words = UserWord.objects.filter(user=user)
-        learned_words_count = 0
-        
-        for user_word in user_words:
-            if user_word.is_learned:
-                learned_words_count += 1
-        
-        return learned_words_count
 
 
-class PracticeSessionCreateView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        serializer = PracticeSessionCreateSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        config = dict(serializer.validated_data)
-        rng_seed = config.pop('rng_seed', None)
-        rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
-
-        try:
-            result = StartPracticeSessionUseCase(rng=rng).execute(user=request.user, config=config)
-        except (InvalidExerciseConfigError, UnknownExerciseHandlerError) as exc:
-            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(result.dto, status=status.HTTP_201_CREATED)
-
-
-class PracticeSessionApiDetailView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, session_id):
-        try:
-            session = GetPracticeSessionUseCase().execute(user=request.user, session_id=session_id)
-        except PracticeSession.DoesNotExist:
-            return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response(session_dto(session))
-
-
-class PracticeSessionCurrentExerciseView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, session_id):
-        try:
-            session, attempt = GetCurrentExerciseUseCase().execute(user=request.user, session_id=session_id)
-        except PracticeSession.DoesNotExist:
-            return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response({
-            'session_id': session.id,
-            'status': session.status,
-            'current_exercise': public_attempt_payload(attempt),
-            'progress': session_progress(session),
-        })
-
-
-class PracticeSessionSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, session_id):
-        try:
-            summary = GetPracticeSessionSummaryUseCase().execute(user=request.user, session_id=session_id)
-        except PracticeSession.DoesNotExist:
-            return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response(summary)
-
-
-class ExerciseAttemptSubmitView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, attempt_id):
-        serializer = ExerciseAttemptSubmitSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        data = serializer.validated_data
-        try:
-            result = SubmitExerciseAnswerUseCase().execute(
-                user=request.user,
-                attempt_id=attempt_id,
-                answer=data['answer'],
-                duration_ms=data.get('duration_ms'),
-            )
-        except ExerciseAttempt.DoesNotExist:
-            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
-        except ExerciseAttemptAccessDeniedError:
-            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
-        except ExerciseAttemptExpiredError as exc:
-            return Response({'error': str(exc)}, status=status.HTTP_410_GONE)
-        except (InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError) as exc:
-            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        payload = result.dto
-        payload['session_status'] = result.attempt.session.status
-        payload['progress'] = session_progress(result.attempt.session)
-        return Response(payload)
-
-
-class ExerciseAttemptResultView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request, attempt_id):
-        try:
-            attempt = ExerciseAttempt.objects.select_related('session').get(id=attempt_id, user=request.user)
-        except ExerciseAttempt.DoesNotExist:
-            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        return Response(exercise_attempt_result_dto(attempt))
