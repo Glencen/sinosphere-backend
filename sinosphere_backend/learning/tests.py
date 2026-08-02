@@ -13,11 +13,14 @@ from learning.exercises.base import ExerciseHandler
 from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
 from learning.exercises.exceptions import InvalidExerciseConfigError, UnknownExerciseHandlerError
 from learning.exercises.handlers.multiple_choice import MultipleChoiceHandler
+from learning.exercises.handlers.translation_cn import TranslationCnHandler
+from learning.exercises.handlers.writing import WritingHandler
 from learning.application.rating_policy import FSRSRating, rating_policy_registry
 from learning.application.spaced_repetition import FSRSService, SpacedRepetitionReviewResult
+from learning.application.events import LearningProgressConsumer, build_exercise_submitted_event
 from learning.exercises.registry import ExerciseHandlerRegistry
-from learning.models import AttemptMemoryCard, FSRSSchedulerProfile, MemoryCard, MemoryReview, ExerciseAttempt, PracticeSession
-from users.models import UserExerciseHistory, UserProfile, UserWord
+from learning.models import AttemptMemoryCard, ExerciseEventConsumerReceipt, FSRSSchedulerProfile, MemoryCard, MemoryReview, ExerciseAttempt, PracticeSession
+from users.models import UserExerciseHistory, UserLearningStats, UserProfile, UserWord
 
 
 User = get_user_model()
@@ -278,11 +281,12 @@ class PracticeSessionAttemptApiTests(APITestCase):
             grading_payload={'correct_index': 1, 'options': ['wrong', 'you'], 'word_id': self.word.id},
         )
 
-        response = self.client.post(
-            '/api/learning/exercises/submit/',
-            {'attempt_id': attempt.id, 'answer': '1', 'time_spent': 2.5},
-            format='json',
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                '/api/learning/exercises/submit/',
+                {'attempt_id': attempt.id, 'answer': '1', 'time_spent': 2.5},
+                format='json',
+            )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['is_correct'])
@@ -290,14 +294,12 @@ class PracticeSessionAttemptApiTests(APITestCase):
 
         attempt.refresh_from_db()
         session.refresh_from_db()
-        user_word = UserWord.objects.get(user=self.user, word=self.word)
-
         self.assertTrue(attempt.is_correct)
         self.assertEqual(attempt.answer, '1')
         self.assertEqual(attempt.status, ExerciseAttempt.STATUS_SUBMITTED)
         self.assertEqual(session.status, PracticeSession.STATUS_COMPLETED)
-        self.assertEqual(user_word.total_attempts, 1)
-        self.assertEqual(user_word.correct_attempts, 1)
+        self.assertEqual(UserExerciseHistory.objects.filter(user=self.user, word=self.word).count(), 1)
+        self.assertEqual(UserLearningStats.objects.get(user=self.user).total_exercises_completed, 1)
 
     def test_submit_attempt_is_idempotent_for_handler_attempt(self):
         session = PracticeSession.objects.create(user=self.user, requested_count=1)
@@ -313,22 +315,24 @@ class PracticeSessionAttemptApiTests(APITestCase):
             grading_payload={'correct_index': 1, 'options': ['wrong', 'you'], 'word_id': self.word.id},
         )
 
-        first_response = self.client.post(
-            '/api/learning/exercises/submit/',
-            {'attempt_id': attempt.id, 'answer': {'selected_index': 1}, 'time_spent': 2},
-            format='json',
-        )
-        second_response = self.client.post(
-            '/api/learning/exercises/submit/',
-            {'attempt_id': attempt.id, 'answer': {'selected_index': 1}, 'time_spent': 2},
-            format='json',
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            first_response = self.client.post(
+                '/api/learning/exercises/submit/',
+                {'attempt_id': attempt.id, 'answer': {'selected_index': 1}, 'time_spent': 2},
+                format='json',
+            )
+        with self.captureOnCommitCallbacks(execute=True):
+            second_response = self.client.post(
+                '/api/learning/exercises/submit/',
+                {'attempt_id': attempt.id, 'answer': {'selected_index': 1}, 'time_spent': 2},
+                format='json',
+            )
 
         self.assertEqual(first_response.status_code, status.HTTP_200_OK)
         self.assertEqual(second_response.status_code, status.HTTP_200_OK)
         self.assertTrue(second_response.data['is_correct'])
         self.assertEqual(UserExerciseHistory.objects.filter(user=self.user).count(), 1)
-        self.assertEqual(UserWord.objects.get(user=self.user, word=self.word).total_attempts, 1)
+        self.assertEqual(ExerciseEventConsumerReceipt.objects.filter(consumer_name='learning_progress_v1').count(), 1)
 
     def test_submit_rolls_back_when_handler_fails(self):
         session = PracticeSession.objects.create(user=self.user)
@@ -943,3 +947,175 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         self.assertNotIn('due_at', payload)
         self.assertNotIn('memory_card_id', payload)
         self.assertNotIn('private_state', payload)
+
+
+class RemainingExerciseHandlersTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='handler-user', password='pass12345')
+        self.word = Word.objects.create(
+            hanzi='猫',
+            pinyin_numeric='mao1',
+            pinyin_graphic='mao',
+            translation='cat; kitten',
+            difficulty=1,
+        )
+        self.session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+
+    def test_translation_cn_handler_generates_private_answer_and_item_result(self):
+        handler = TranslationCnHandler()
+        generated = handler.generate(ExerciseGenerationContext(user=self.user, word=self.word, config={}))
+        self.assertNotIn('accepted_answers', generated.public_payload)
+        self.assertEqual(generated.private_state['correct_answer'], '猫')
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            private_state=generated.private_state,
+        )
+
+        grade = handler.grade(attempt, {'text': '猫'})
+
+        self.assertTrue(grade.is_fully_correct)
+        self.assertEqual(len(grade.item_results), 1)
+        self.assertEqual(grade.item_results[0].source_item_id, self.word.id)
+
+    def test_writing_handler_accepts_completed_flag_without_exposing_private_state(self):
+        handler = WritingHandler()
+        generated = handler.generate(ExerciseGenerationContext(user=self.user, word=self.word, config={}))
+        self.assertIn('stroke_data', generated.public_payload)
+        self.assertNotIn('correct_answer', generated.public_payload)
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            private_state=generated.private_state,
+        )
+
+        grade = handler.grade(attempt, {'completed': True})
+
+        self.assertTrue(grade.is_fully_correct)
+        self.assertEqual(grade.item_results[0].source_item_id, self.word.id)
+
+
+class ExerciseSystemEndToEndTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='e2e-user', password='pass12345')
+        self.other_user = User.objects.create_user(username='e2e-other', password='pass12345')
+        UserProfile.objects.get_or_create(user=self.user)
+        FSRSSchedulerProfile.objects.create(user=None, version=9, is_active=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.words = [
+            Word.objects.create(
+                hanzi=f'e{index}',
+                pinyin_numeric=f'e{index}',
+                pinyin_graphic=f'e{index}',
+                translation=f'e2e-meaning-{index}',
+                difficulty=1,
+            )
+            for index in range(6)
+        ]
+        self.due_card = MemoryCard.objects.create(
+            user=self.user,
+            learning_item=self.words[0],
+            direction=MemoryCard.DIRECTION_CN_TO_RU,
+            due_at=timezone.now() - timedelta(minutes=5),
+            parameter_set_version=9,
+        )
+
+    def _answer_for_attempt(self, attempt):
+        if attempt.kind == 'multiple_choice':
+            return {'selected_index': attempt.private_state['correct_index']}
+        if attempt.kind in ('translation_ru', 'translation_cn'):
+            return {'text': attempt.private_state['correct_answer']}
+        if attempt.kind == 'matching':
+            return {'translations': [pair['translation'] for pair in attempt.private_state['pairs']]}
+        if attempt.kind == 'writing':
+            return {'completed': True}
+        raise AssertionError(f'Unhandled attempt kind {attempt.kind}')
+
+    def test_full_session_flow_updates_fsrs_events_and_is_idempotent(self):
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {
+                'requested_cards_count': 4,
+                'allowed_types': ['translation_ru', 'translation_cn', 'multiple_choice', 'writing'],
+                'rng_seed': 11,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn('private_state', response.data['current_exercise'])
+        self.assertNotIn('fsrs_state', response.data['current_exercise'])
+
+        session = PracticeSession.objects.get(id=response.data['session_id'])
+        self.assertGreaterEqual(session.attempts.values('kind').distinct().count(), 2)
+        self.assertTrue(AttemptMemoryCard.objects.filter(attempt__session=session, memory_card=self.due_card).exists())
+
+        first_attempt_id = session.attempts.order_by('position').first().id
+        for attempt in session.attempts.order_by('position'):
+            with self.captureOnCommitCallbacks(execute=True):
+                submit = self.client.post(
+                    f'/api/exercise-attempts/{attempt.id}/submit/',
+                    {'answer': self._answer_for_attempt(attempt), 'duration_ms': 1000},
+                    format='json',
+                )
+            self.assertEqual(submit.status_code, status.HTTP_200_OK)
+            self.assertIn('item_results', submit.data)
+
+        session.refresh_from_db()
+        self.assertEqual(session.status, PracticeSession.STATUS_COMPLETED)
+        self.assertEqual(MemoryReview.objects.filter(exercise_attempt__session=session).count(), AttemptMemoryCard.objects.filter(attempt__session=session).count())
+        self.assertEqual(UserExerciseHistory.objects.filter(user=self.user).count(), session.attempts.count())
+        self.assertEqual(ExerciseEventConsumerReceipt.objects.filter(consumer_name='learning_progress_v1').count(), session.attempts.count())
+        self.assertEqual(UserLearningStats.objects.get(user=self.user).total_exercises_completed, session.attempts.count())
+
+        first_attempt = ExerciseAttempt.objects.get(id=first_attempt_id)
+        duplicate = self.client.post(
+            f'/api/exercise-attempts/{first_attempt.id}/submit/',
+            {'answer': self._answer_for_attempt(first_attempt), 'duration_ms': 1000},
+            format='json',
+        )
+        self.assertEqual(duplicate.status_code, status.HTTP_200_OK)
+        self.assertEqual(MemoryReview.objects.filter(exercise_attempt=first_attempt).count(), first_attempt.memory_card_links.count())
+        self.assertEqual(UserExerciseHistory.objects.filter(user=self.user).count(), session.attempts.count())
+
+        other_client = APIClient()
+        other_client.force_authenticate(self.other_user)
+        denied = other_client.post(
+            f'/api/exercise-attempts/{first_attempt.id}/submit/',
+            {'answer': self._answer_for_attempt(first_attempt), 'duration_ms': 1000},
+            format='json',
+        )
+        self.assertEqual(denied.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_consumer_reprocessing_same_event_is_safe(self):
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='translation_ru',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=(LearningItemRef('memory_card', self.due_card.id, {'word_id': self.words[0].id, 'difficulty': 1}),),
+        )
+        SubmitExerciseAnswerUseCase(spaced_repetition_service=FakeSpacedRepetitionService()).execute(
+            user=self.user,
+            attempt_id=started.attempt.id,
+            answer={'text': started.attempt.private_state['correct_answer']},
+            duration_ms=1000,
+        )
+        attempt = ExerciseAttempt.objects.get(id=started.attempt.id)
+        event = build_exercise_submitted_event(attempt)
+        consumer = LearningProgressConsumer()
+
+        before = UserExerciseHistory.objects.filter(user=self.user, word=self.words[0]).count()
+        self.assertTrue(consumer.handle(event))
+        self.assertFalse(consumer.handle(event))
+        self.assertEqual(UserExerciseHistory.objects.filter(user=self.user, word=self.words[0]).count(), before + 1)
