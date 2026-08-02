@@ -3,6 +3,87 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from dictionary.models import Word, Topic
 
+class FSRSSchedulerProfile(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='fsrs_scheduler_profiles'
+    )
+    parameters = models.JSONField(default=list, blank=True)
+    desired_retention = models.DecimalField(max_digits=4, decimal_places=3, default=0.9)
+    learning_steps = models.JSONField(default=list, blank=True)
+    relearning_steps = models.JSONField(default=list, blank=True)
+    maximum_interval_days = models.PositiveIntegerField(default=36500)
+    version = models.PositiveIntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'version'],
+                name='unique_fsrs_profile_user_version'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['user', 'is_active'], name='idx_fsrs_profile_user_active'),
+        ]
+
+
+class MemoryCard(models.Model):
+    DIRECTION_CN_TO_RU = 'cn_to_ru'
+    DIRECTION_RU_TO_CN = 'ru_to_cn'
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='memory_cards')
+    learning_item = models.ForeignKey(Word, on_delete=models.CASCADE, related_name='memory_cards')
+    direction = models.CharField(max_length=32)
+    fsrs_state = models.JSONField(default=dict, blank=True)
+    due_at = models.DateTimeField(default=timezone.now, db_index=True)
+    last_review_at = models.DateTimeField(null=True, blank=True)
+    scheduler_version = models.CharField(max_length=32, default='fsrs-py')
+    parameter_set_version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'learning_item', 'direction'],
+                name='unique_memory_card_direction'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['user', 'due_at'], name='idx_memory_card_user_due'),
+            models.Index(fields=['user', 'direction'], name='idx_memory_card_user_direction'),
+        ]
+
+
+class MemoryReview(models.Model):
+    memory_card = models.ForeignKey(MemoryCard, on_delete=models.CASCADE, related_name='reviews')
+    exercise_attempt = models.ForeignKey(
+        'ExerciseAttempt',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='memory_reviews'
+    )
+    rating = models.PositiveIntegerField()
+    reviewed_at = models.DateTimeField()
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    previous_state = models.JSONField(default=dict, blank=True)
+    resulting_state = models.JSONField(default=dict, blank=True)
+    fsrs_log = models.JSONField(default=dict, blank=True)
+    scheduler_version = models.CharField(max_length=32)
+    parameter_set_version = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['memory_card', 'reviewed_at'], name='idx_memory_review_card_time'),
+            models.Index(fields=['exercise_attempt'], name='idx_memory_review_attempt'),
+        ]
+
 class Lesson(models.Model):
     """
     Урок - набор заданий по определенной теме
@@ -306,6 +387,7 @@ class ExerciseAttempt(models.Model):
     time_spent = models.FloatField(default=0)
     duration_ms = models.PositiveIntegerField(null=True, blank=True)
     error_code = models.CharField(max_length=64, blank=True, default='')
+    fsrs_rating = models.PositiveIntegerField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     rating = models.PositiveSmallIntegerField(null=True, blank=True)
     started_at = models.DateTimeField(default=timezone.now)
@@ -335,3 +417,37 @@ class ExerciseAttempt(models.Model):
     def __str__(self):
         status = 'pending' if self.is_correct is None else str(self.is_correct)
         return f"{self.user.username}: {self.exercise_type} #{self.order} ({status})"
+
+class AttemptMemoryCard(models.Model):
+    attempt = models.ForeignKey(
+        ExerciseAttempt,
+        related_name='memory_card_links',
+        on_delete=models.CASCADE
+    )
+    memory_card = models.ForeignKey(
+        MemoryCard,
+        on_delete=models.PROTECT,
+        related_name='attempt_links'
+    )
+    position = models.PositiveIntegerField()
+    is_correct = models.BooleanField(null=True, blank=True)
+    score = models.DecimalField(max_digits=6, decimal_places=4, default=0)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    fsrs_rating = models.PositiveIntegerField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['attempt', 'memory_card'],
+                name='unique_attempt_memory_card'
+            ),
+            models.UniqueConstraint(
+                fields=['attempt', 'position'],
+                name='unique_attempt_memory_card_position'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['memory_card'], name='idx_attempt_memory_card'),
+            models.Index(fields=['attempt', 'position'], name='idx_attempt_memory_position'),
+        ]
