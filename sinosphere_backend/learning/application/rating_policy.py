@@ -1,4 +1,4 @@
-﻿class FSRSRating:
+class FSRSRating:
     AGAIN = 1
     HARD = 2
     GOOD = 3
@@ -6,6 +6,8 @@
 
 
 class BaseRatingPolicy:
+    version = 1
+
     def rating_for(self, *, item_result, attempt, explicit_rating=None):
         if not item_result.is_correct:
             return FSRSRating.AGAIN
@@ -17,28 +19,40 @@ class BaseRatingPolicy:
 
 
 class MultipleChoiceRatingPolicy(BaseRatingPolicy):
-    pass
+    kind = 'multiple_choice'
 
 
 class TranslationRatingPolicy(BaseRatingPolicy):
-    pass
+    kind = 'translation_ru'
+
+
+class TranslationCnRatingPolicy(BaseRatingPolicy):
+    kind = 'translation_cn'
 
 
 class MatchingRatingPolicy(BaseRatingPolicy):
-    pass
+    kind = 'matching'
+
+
+class WritingRatingPolicy(BaseRatingPolicy):
+    kind = 'writing'
 
 
 class RatingPolicyRegistry:
     def __init__(self):
-        self._policies = {
-            'multiple_choice': MultipleChoiceRatingPolicy(),
-            'translation_ru': TranslationRatingPolicy(),
-            'matching': MatchingRatingPolicy(),
-        }
+        self._policies = {}
         self._default = BaseRatingPolicy()
+
+    def register(self, policy):
+        self._policies[policy.kind] = policy
 
     def get(self, kind):
         return self._policies.get(kind, self._default)
 
 
 rating_policy_registry = RatingPolicyRegistry()
+rating_policy_registry.register(MultipleChoiceRatingPolicy())
+rating_policy_registry.register(TranslationRatingPolicy())
+rating_policy_registry.register(TranslationCnRatingPolicy())
+rating_policy_registry.register(MatchingRatingPolicy())
+rating_policy_registry.register(WritingRatingPolicy())
