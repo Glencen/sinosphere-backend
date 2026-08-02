@@ -1,9 +1,11 @@
 import random
 from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -1881,4 +1883,76 @@ class ExerciseSystemEndToEndTests(APITestCase):
         self.assertTrue(consumer.handle(event))
         self.assertFalse(consumer.handle(event))
         self.assertEqual(UserExerciseHistory.objects.filter(user=self.user, word=self.words[0]).count(), before + 1)
+
+
+class ExerciseSnapshotCleanupTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='snapshot-user', password='pass12345')
+        self.word = Word.objects.create(
+            hanzi='snap',
+            pinyin_numeric='snap',
+            pinyin_graphic='snap',
+            translation='snapshot',
+            difficulty=1,
+        )
+
+    def _attempt(self, *, session_status, submitted_days_ago=None):
+        session = PracticeSession.objects.create(
+            user=self.user,
+            status=session_status,
+            generated_exercises_count=1,
+            requested_cards_count=1,
+        )
+        submitted_at = None
+        is_correct = None
+        if submitted_days_ago is not None:
+            submitted_at = timezone.now() - timedelta(days=submitted_days_ago)
+            is_correct = True
+        return ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.word,
+            exercise_type='translation_ru',
+            kind='translation_ru',
+            handler_version=1,
+            status=ExerciseAttempt.STATUS_SUBMITTED if submitted_at else ExerciseAttempt.STATUS_PENDING,
+            submitted_at=submitted_at,
+            is_correct=is_correct,
+            score=1 if is_correct else 0,
+            public_payload={'kind': 'translation_ru', 'prompt': 'heavy'},
+            private_state={'correct_answer': 'snapshot'},
+            grading_payload={'accepted_answers': ['snapshot']},
+            result={'score': 1, 'item_results': []} if is_correct else {},
+        )
+
+    def test_cleanup_snapshots_dry_run_does_not_modify_attempts(self):
+        attempt = self._attempt(session_status=PracticeSession.STATUS_COMPLETED, submitted_days_ago=45)
+
+        stdout = StringIO()
+        call_command('cleanup_exercise_snapshots', '--days', '30', '--dry-run', stdout=stdout)
+
+        attempt.refresh_from_db()
+        self.assertIn('would clean 1', stdout.getvalue())
+        self.assertEqual(attempt.public_payload, {'kind': 'translation_ru', 'prompt': 'heavy'})
+        self.assertEqual(attempt.private_state, {'correct_answer': 'snapshot'})
+
+    def test_cleanup_clears_only_old_terminal_snapshots_and_keeps_result(self):
+        old_terminal = self._attempt(session_status=PracticeSession.STATUS_COMPLETED, submitted_days_ago=45)
+        recent_terminal = self._attempt(session_status=PracticeSession.STATUS_COMPLETED, submitted_days_ago=2)
+        pending = self._attempt(session_status=PracticeSession.STATUS_IN_PROGRESS)
+
+        stdout = StringIO()
+        call_command('cleanup_exercise_snapshots', '--days', '30', stdout=stdout)
+
+        old_terminal.refresh_from_db()
+        recent_terminal.refresh_from_db()
+        pending.refresh_from_db()
+
+        self.assertIn('cleaned 1', stdout.getvalue())
+        self.assertEqual(old_terminal.public_payload, {})
+        self.assertEqual(old_terminal.private_state, {})
+        self.assertEqual(old_terminal.grading_payload, {})
+        self.assertEqual(old_terminal.result, {'score': 1, 'item_results': []})
+        self.assertNotEqual(recent_terminal.public_payload, {})
+        self.assertNotEqual(pending.public_payload, {})
 
