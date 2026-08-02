@@ -315,12 +315,6 @@ class SubmitExerciseView(APIView):
                 attempt_id=data['attempt_id'],
                 answer=data['answer'],
                 duration_ms=duration_ms,
-                on_graded=lambda attempt, grade: self._apply_learning_progress(
-                    user=user,
-                    attempt=attempt,
-                    is_correct=grade.is_fully_correct,
-                    response_time=response_time,
-                ),
             )
         except ExerciseAttempt.DoesNotExist:
             return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -333,16 +327,9 @@ class SubmitExerciseView(APIView):
         except UnknownExerciseHandlerError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        attempt = result.attempt
-        user_word = UserWord.objects.filter(user=user, word=attempt.word).first() if attempt.word else None
         payload = result.dto
         payload.update({
-            'rating': attempt.rating,
-            'next_review': user_word.due if user_word else None,
-            'mastery_score': user_word.mastery_score if user_word else 0,
             'xp_earned': 15 if result.grade.is_fully_correct else 5,
-            'is_learned': user_word.is_learned if user_word else False,
-            'consecutive_correct': user_word.consecutive_correct if user_word else 0,
         })
         return Response(payload)
 
