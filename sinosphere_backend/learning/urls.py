@@ -12,11 +12,6 @@ urlpatterns = [
     path('lessons/<int:lesson_id>/complete/', views.complete_lesson, name='complete-lesson'),
     
     # Упражнения
-    path('exercises/generate/', views.GenerateExerciseView.as_view(), name='generate-exercise'),
-    path('exercises/submit/', views.SubmitExerciseView.as_view(), name='submit-exercise'),
-    path('practice/session/', views.PracticeSessionView.as_view(), name='practice-session'),
-    path('practice/session/<int:session_id>/', views.PracticeSessionDetailView.as_view(), name='practice-session-detail'),
-    
     # Повторение
     path('review/schedule/', views.ReviewScheduleView.as_view(), name='review-schedule'),
     

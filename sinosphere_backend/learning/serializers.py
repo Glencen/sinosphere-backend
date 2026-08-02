@@ -1,11 +1,23 @@
 from rest_framework import serializers
 from django.utils import timezone
 from .models import (
-    Lesson, Exercise, UserLessonProgress, DailyGoal,
-    PracticeSession, ExerciseAttempt
+    Lesson, Exercise, UserLessonProgress, DailyGoal
 )
 from dictionary.serializers import WordSerializer, TopicSerializer
 from users.models import UserLearningStats, UserTopicProgress
+
+
+class StrictSerializer(serializers.Serializer):
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            unknown_fields = set(data) - set(self.fields)
+            if unknown_fields:
+                raise serializers.ValidationError({
+                    field: ['Unknown field.']
+                    for field in sorted(unknown_fields)
+                })
+        return super().to_internal_value(data)
+
 
 class ExerciseSerializer(serializers.ModelSerializer):
     word_info = WordSerializer(source='word', read_only=True)
@@ -111,15 +123,10 @@ class TopicProgressSerializer(serializers.ModelSerializer):
         return 0
 
 
-class PracticeSessionCreateSerializer(serializers.Serializer):
+class PracticeSessionCreateSerializer(StrictSerializer):
     topic_id = serializers.IntegerField(required=False, allow_null=True)
     requested_cards_count = serializers.IntegerField(required=False, min_value=1, max_value=100)
-    count = serializers.IntegerField(required=False, min_value=1, max_value=100)
-    type = serializers.CharField(required=False, default='mixed')
-    exercise_types = serializers.ListField(child=serializers.CharField(), required=False)
     allowed_types = serializers.ListField(child=serializers.CharField(), required=False)
-    includeReview = serializers.BooleanField(required=False, default=True)
-    includeNew = serializers.BooleanField(required=False, default=True)
     include_review = serializers.BooleanField(required=False)
     include_new = serializers.BooleanField(required=False)
     expires_in_minutes = serializers.IntegerField(required=False, min_value=1, max_value=60 * 24 * 30)
@@ -127,39 +134,10 @@ class PracticeSessionCreateSerializer(serializers.Serializer):
     handler_config = serializers.DictField(required=False)
 
 
-class ExerciseAttemptSubmitSerializer(serializers.Serializer):
+class ExerciseAttemptSubmitSerializer(StrictSerializer):
     answer = serializers.JSONField(required=True)
     duration_ms = serializers.IntegerField(required=False, min_value=0, allow_null=True)
-    time_spent = serializers.FloatField(required=False, min_value=0)
 
-
-class ExerciseSubmissionSerializer(serializers.Serializer):
-    attempt_id = serializers.IntegerField(required=False)
-    exercise_id = serializers.IntegerField(required=False)
-    word_id = serializers.IntegerField(required=False)
-    answer = serializers.JSONField(required=True)
-    exercise_type = serializers.CharField(required=False)
-    time_spent = serializers.FloatField(default=0)
-    exercise_data = serializers.JSONField(required=False)
-    
-    def validate(self, data):
-        from dictionary.models import Word
-
-        if data.get('attempt_id'):
-            return data
-
-        if not data.get('word_id') or not data.get('exercise_type'):
-            raise serializers.ValidationError({
-                'attempt_id': 'attempt_id is required for generated practice exercises.'
-            })
-
-        try:
-            word = Word.objects.get(id=data['word_id'])
-        except Word.DoesNotExist:
-            raise serializers.ValidationError({"word_id": "Слово не найдено"})
-        
-        data['word'] = word
-        return data
 
 
 class LearningStatsSerializer(serializers.ModelSerializer):
@@ -194,72 +172,4 @@ class LearningStatsSerializer(serializers.ModelSerializer):
             return "broken"
 
 
-class GeneratedExerciseSerializer(serializers.Serializer):
-    attempt_id = serializers.IntegerField(required=False)
-    session_id = serializers.IntegerField(required=False)
-    type = serializers.CharField()
-    question = serializers.CharField(required=False, allow_blank=True)
-    word_id = serializers.IntegerField()
-    options = serializers.ListField(child=serializers.CharField(), required=False)
-    correct_answer = serializers.CharField(required=False)
-    hint = serializers.CharField(required=False, allow_blank=True)
-    difficulty = serializers.IntegerField(default=1)
-    pairs = serializers.ListField(child=serializers.DictField(), required=False)
-    correct_index = serializers.IntegerField(required=False)
-    correct_pairs = serializers.ListField(child=serializers.ListField(), required=False)
-    instructions = serializers.CharField(required=False)
-    
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        if 'correct_answer' in data and self.context.get('hide_answer', True):
-            del data['correct_answer']
-        if self.context.get('hide_answer', True):
-            data.pop('correct_index', None)
-            data.pop('correct_pairs', None)
-            if 'pairs' in data:
-                data['pairs'] = [
-                    {
-                        key: value
-                        for key, value in pair.items()
-                        if key != 'translation'
-                    }
-                    for pair in data.get('pairs', [])
-                ]
-        return data
 
-
-class ExerciseAttemptSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ExerciseAttempt
-        fields = [
-            'id', 'session', 'word', 'static_exercise', 'exercise_type',
-            'kind', 'handler_version', 'order', 'position', 'learning_items', 'public_payload',
-            'answer', 'result', 'score', 'is_correct', 'time_spent',
-            'duration_ms', 'error_code', 'status', 'rating',
-            'started_at', 'created_at', 'submitted_at'
-        ]
-        read_only_fields = fields
-
-
-class PracticeSessionSerializer(serializers.ModelSerializer):
-    exercises = serializers.SerializerMethodField()
-    count = serializers.SerializerMethodField()
-
-    class Meta:
-        model = PracticeSession
-        fields = [
-            'id', 'session_type', 'topic', 'requested_count',
-            'requested_cards_count', 'generated_exercises_count',
-            'settings', 'generation_config', 'status', 'started_at',
-            'created_at', 'completed_at', 'expires_at', 'exercises', 'count'
-        ]
-        read_only_fields = fields
-
-    def get_exercises(self, obj):
-        return [
-            attempt.public_payload
-            for attempt in obj.attempts.all().order_by('order')
-        ]
-
-    def get_count(self, obj):
-        return obj.attempts.count()
