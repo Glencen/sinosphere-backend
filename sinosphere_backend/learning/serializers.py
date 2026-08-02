@@ -210,9 +210,11 @@ class ExerciseAttemptSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExerciseAttempt
         fields = [
-            'id', 'session', 'word', 'exercise_type', 'order',
-            'public_payload', 'answer', 'is_correct', 'time_spent',
-            'rating', 'created_at', 'submitted_at'
+            'id', 'session', 'word', 'static_exercise', 'exercise_type',
+            'kind', 'handler_version', 'order', 'public_payload',
+            'answer', 'result', 'score', 'is_correct', 'time_spent',
+            'duration_ms', 'error_code', 'status', 'rating',
+            'started_at', 'created_at', 'submitted_at'
         ]
         read_only_fields = fields
 

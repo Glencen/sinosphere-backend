@@ -221,6 +221,16 @@ class PracticeSession(models.Model):
 
 
 class ExerciseAttempt(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_SUBMITTED = 'submitted'
+    STATUS_EXPIRED = 'expired'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_SUBMITTED, 'Submitted'),
+        (STATUS_EXPIRED, 'Expired'),
+    ]
+
     session = models.ForeignKey(
         PracticeSession,
         on_delete=models.CASCADE,
@@ -238,14 +248,30 @@ class ExerciseAttempt(models.Model):
         blank=True,
         related_name='exercise_attempts'
     )
+    static_exercise = models.ForeignKey(
+        Exercise,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='attempts'
+    )
     exercise_type = models.CharField(max_length=32)
+    kind = models.CharField(max_length=64, default='', blank=True)
+    handler_version = models.PositiveIntegerField(default=1)
     order = models.PositiveSmallIntegerField(default=0)
     public_payload = models.JSONField(default=dict)
     grading_payload = models.JSONField(default=dict)
+    private_state = models.JSONField(default=dict, blank=True)
     answer = models.JSONField(null=True, blank=True)
+    result = models.JSONField(default=dict, blank=True)
     is_correct = models.BooleanField(null=True, blank=True)
+    score = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     time_spent = models.FloatField(default=0)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True, default='')
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
     rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
 
@@ -260,6 +286,8 @@ class ExerciseAttempt(models.Model):
         indexes = [
             models.Index(fields=['user', 'is_correct'], name='idx_attempt_user_correct'),
             models.Index(fields=['session', 'order'], name='idx_attempt_session_order'),
+            models.Index(fields=['kind', 'handler_version'], name='idx_attempt_handler'),
+            models.Index(fields=['user', 'status'], name='idx_attempt_user_status'),
         ]
 
     def __str__(self):
