@@ -3,7 +3,6 @@ from django.utils import timezone
 from dictionary.models import Word
 from learning.exercises.dto import LearningItemRef
 from learning.models import FSRSSchedulerProfile, MemoryCard
-from users.models import UserWord
 
 
 class PracticeSessionPlanner:

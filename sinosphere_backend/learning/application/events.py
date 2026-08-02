@@ -7,7 +7,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from dictionary.models import Topic, WordTag
-from learning.models import DailyGoal, ExerciseAttempt, ExerciseEventConsumerReceipt
+from learning.models import DailyGoal, ExerciseAttempt, ExerciseEventConsumerReceipt, MemoryCard
 from users.models import UserExerciseHistory, UserLearningStats, UserTopicProgress
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ class LearningProgressConsumer:
             progress.total_correct = total_correct
             progress.accuracy = (total_correct / total_attempts * 100) if total_attempts else 0
             progress.last_practiced = timezone.now()
-            progress.words_learned = 0
+            progress.words_learned = self._learned_words_count_in_topic(attempt.user, topic)
             if progress.accuracy >= 90:
                 progress.mastery_level = 5
             elif progress.accuracy >= 75:
@@ -155,3 +155,11 @@ class LearningProgressConsumer:
     def _words_count_in_topic(self, topic):
         tag_ids = topic.tags.values_list('id', flat=True)
         return WordTag.objects.filter(tag_id__in=tag_ids).values('word').distinct().count()
+
+    def _learned_words_count_in_topic(self, user, topic):
+        tag_ids = topic.tags.values_list('id', flat=True)
+        return MemoryCard.objects.filter(
+            user=user,
+            learning_item__word_tags__tag_id__in=tag_ids,
+            reviews__isnull=False,
+        ).values('learning_item').distinct().count()
