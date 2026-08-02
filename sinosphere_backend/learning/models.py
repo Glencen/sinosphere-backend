@@ -90,6 +90,23 @@ class MemoryReview(models.Model):
             models.Index(fields=['exercise_attempt'], name='idx_memory_review_attempt'),
         ]
 
+
+class ExerciseEventConsumerReceipt(models.Model):
+    consumer_name = models.CharField(max_length=128)
+    event_id = models.UUIDField()
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['consumer_name', 'event_id'],
+                name='unique_exercise_event_consumer_receipt'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['consumer_name', 'processed_at'], name='idx_evt_receipt_cons_time'),
+        ]
+
 class Lesson(models.Model):
     """
     Урок - набор заданий по определенной теме
