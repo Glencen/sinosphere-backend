@@ -8,13 +8,15 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from dictionary.models import Word
-from learning.application.use_cases import StartExerciseUseCase
+from learning.application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
 from learning.exercises.base import ExerciseHandler
 from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
 from learning.exercises.exceptions import InvalidExerciseConfigError, UnknownExerciseHandlerError
 from learning.exercises.handlers.multiple_choice import MultipleChoiceHandler
+from learning.application.rating_policy import FSRSRating, rating_policy_registry
+from learning.application.spaced_repetition import FSRSService, SpacedRepetitionReviewResult
 from learning.exercises.registry import ExerciseHandlerRegistry
-from learning.models import ExerciseAttempt, PracticeSession
+from learning.models import AttemptMemoryCard, FSRSSchedulerProfile, MemoryCard, MemoryReview, ExerciseAttempt, PracticeSession
 from users.models import UserExerciseHistory, UserProfile, UserWord
 
 
@@ -684,3 +686,260 @@ class PracticeSessionPlanningApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(PracticeSession.objects.filter(user=self.user).count(), 0)
         self.assertEqual(ExerciseAttempt.objects.filter(user=self.user).count(), 0)
+
+class FakeSpacedRepetitionService:
+    def __init__(self, fail_on_card_id=None):
+        self.reviewed_card_ids = []
+        self.fail_on_card_id = fail_on_card_id
+
+    def review(self, *, card, rating, reviewed_at, duration_ms):
+        self.reviewed_card_ids.append(card.id)
+        if self.fail_on_card_id == card.id:
+            raise RuntimeError('fsrs failed')
+        previous = dict(card.fsrs_state or {})
+        resulting = {**previous, 'last_rating': rating, 'reviewed': True}
+        return SpacedRepetitionReviewResult(
+            previous_state=previous,
+            resulting_state=resulting,
+            due_at=timezone.now() + timedelta(days=rating),
+            fsrs_log={'fake': True, 'rating': rating},
+            scheduler_version='fake-fsrs',
+            parameter_set_version=7,
+        )
+
+
+class MemoryCardFSRSIntegrationTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='fsrs-user', password='pass12345')
+        UserProfile.objects.get_or_create(user=self.user)
+        FSRSSchedulerProfile.objects.create(user=None, version=7, is_active=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.words = [
+            Word.objects.create(
+                hanzi=f'm{index}',
+                pinyin_numeric=f'm{index}',
+                pinyin_graphic=f'm{index}',
+                translation=f'meaning-{index}',
+                difficulty=1,
+            )
+            for index in range(5)
+        ]
+
+    def _card(self, word, direction=MemoryCard.DIRECTION_CN_TO_RU, due_offset_minutes=-1):
+        return MemoryCard.objects.create(
+            user=self.user,
+            learning_item=word,
+            direction=direction,
+            due_at=timezone.now() + timedelta(minutes=due_offset_minutes),
+            parameter_set_version=7,
+        )
+
+    def test_create_memory_card_and_independent_directions(self):
+        cn_to_ru = self._card(self.words[0], MemoryCard.DIRECTION_CN_TO_RU)
+        ru_to_cn = self._card(self.words[0], MemoryCard.DIRECTION_RU_TO_CN)
+
+        self.assertNotEqual(cn_to_ru.id, ru_to_cn.id)
+        self.assertEqual(MemoryCard.objects.filter(user=self.user, learning_item=self.words[0]).count(), 2)
+
+    def test_planner_selects_due_cards_before_new_cards(self):
+        due_card = self._card(self.words[0])
+
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 3, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        session = PracticeSession.objects.get(id=response.data['session_id'])
+        linked_card_ids = list(AttemptMemoryCard.objects.filter(attempt__session=session).values_list('memory_card_id', flat=True))
+        self.assertIn(due_card.id, linked_card_ids)
+        self.assertEqual(len(set(linked_card_ids)), 3)
+        self.assertEqual(MemoryCard.objects.filter(user=self.user).count(), 3)
+
+    def test_rating_policy_mapping(self):
+        policy = rating_policy_registry.get('multiple_choice')
+        attempt = ExerciseAttempt(exercise_type='multiple_choice', kind='multiple_choice')
+
+        wrong = ItemGradeResult(source_item_id=1, is_correct=False, score=0)
+        hinted = ItemGradeResult(source_item_id=1, is_correct=True, score=1, used_hint=True)
+        retried = ItemGradeResult(source_item_id=1, is_correct=True, score=1, attempts_count=2)
+        correct = ItemGradeResult(source_item_id=1, is_correct=True, score=1)
+
+        self.assertEqual(policy.rating_for(item_result=wrong, attempt=attempt), FSRSRating.AGAIN)
+        self.assertEqual(policy.rating_for(item_result=hinted, attempt=attempt), FSRSRating.HARD)
+        self.assertEqual(policy.rating_for(item_result=retried, attempt=attempt), FSRSRating.HARD)
+        self.assertEqual(policy.rating_for(item_result=correct, attempt=attempt), FSRSRating.GOOD)
+        self.assertEqual(policy.rating_for(item_result=correct, attempt=attempt, explicit_rating=FSRSRating.EASY), FSRSRating.EASY)
+        self.assertEqual(policy.rating_for(item_result=wrong, attempt=attempt, explicit_rating=FSRSRating.EASY), FSRSRating.AGAIN)
+
+    def test_submit_updates_one_memory_card_and_creates_review(self):
+        card = self._card(self.words[0])
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='multiple_choice',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=(LearningItemRef('memory_card', card.id, {'word_id': self.words[0].id, 'difficulty': 1}),),
+        )
+        correct_index = started.attempt.private_state['correct_index']
+        service = FakeSpacedRepetitionService()
+
+        result = SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+            user=self.user,
+            attempt_id=started.attempt.id,
+            answer={'selected_index': correct_index},
+            duration_ms=1200,
+        )
+
+        card.refresh_from_db()
+        link = AttemptMemoryCard.objects.get(attempt=started.attempt, memory_card=card)
+        review = MemoryReview.objects.get(memory_card=card, exercise_attempt=started.attempt)
+        self.assertTrue(result.grade.is_fully_correct)
+        self.assertEqual(card.fsrs_state['reviewed'], True)
+        self.assertEqual(link.fsrs_rating, FSRSRating.GOOD)
+        self.assertEqual(review.scheduler_version, 'fake-fsrs')
+        self.assertEqual(review.parameter_set_version, 7)
+
+    def test_matching_updates_each_memory_card_independently(self):
+        cards = [self._card(word) for word in self.words[:4]]
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        items = tuple(
+            LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
+            for card in cards
+        )
+        started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='matching',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=items,
+        )
+        translations = [pair['translation'] for pair in started.attempt.private_state['pairs']]
+        translations[1] = 'wrong-answer'
+        service = FakeSpacedRepetitionService()
+
+        SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+            user=self.user,
+            attempt_id=started.attempt.id,
+            answer={'translations': translations},
+            duration_ms=2000,
+        )
+
+        ratings = list(AttemptMemoryCard.objects.filter(attempt=started.attempt).order_by('position').values_list('fsrs_rating', flat=True))
+        self.assertEqual(ratings[0], FSRSRating.GOOD)
+        self.assertEqual(ratings[1], FSRSRating.AGAIN)
+        self.assertEqual(MemoryReview.objects.filter(exercise_attempt=started.attempt).count(), 4)
+
+    def test_rollback_when_one_card_review_fails(self):
+        cards = [self._card(word) for word in self.words[:2]]
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        items = tuple(
+            LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
+            for card in cards
+        )
+        started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='matching',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=items,
+        )
+        translations = [pair['translation'] for pair in started.attempt.private_state['pairs']]
+        service = FakeSpacedRepetitionService(fail_on_card_id=cards[1].id)
+
+        with self.assertRaises(RuntimeError):
+            SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+                user=self.user,
+                attempt_id=started.attempt.id,
+                answer={'translations': translations},
+                duration_ms=2000,
+            )
+
+        started.attempt.refresh_from_db()
+        self.assertIsNone(started.attempt.is_correct)
+        self.assertEqual(MemoryReview.objects.filter(exercise_attempt=started.attempt).count(), 0)
+        self.assertFalse(AttemptMemoryCard.objects.filter(attempt=started.attempt, fsrs_rating__isnull=False).exists())
+
+    def test_idempotent_resubmit_does_not_create_second_review(self):
+        card = self._card(self.words[0])
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='multiple_choice',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=(LearningItemRef('memory_card', card.id, {'word_id': self.words[0].id, 'difficulty': 1}),),
+        )
+        answer = {'selected_index': started.attempt.private_state['correct_index']}
+        service = FakeSpacedRepetitionService()
+        use_case = SubmitExerciseAnswerUseCase(spaced_repetition_service=service)
+
+        use_case.execute(user=self.user, attempt_id=started.attempt.id, answer=answer, duration_ms=1000)
+        due_after_first = MemoryCard.objects.get(id=card.id).due_at
+        use_case.execute(user=self.user, attempt_id=started.attempt.id, answer=answer, duration_ms=1000)
+
+        self.assertEqual(MemoryReview.objects.filter(memory_card=card, exercise_attempt=started.attempt).count(), 1)
+        self.assertEqual(MemoryCard.objects.get(id=card.id).due_at, due_after_first)
+        self.assertEqual(service.reviewed_card_ids, [card.id])
+
+    def test_card_locks_are_requested_in_stable_id_order(self):
+        cards = [self._card(word) for word in self.words[:3]]
+        reversed_cards = tuple(reversed(cards))
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        items = tuple(
+            LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
+            for card in reversed_cards
+        )
+        started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='matching',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=items,
+        )
+        translations = [pair['translation'] for pair in started.attempt.private_state['pairs']]
+        service = FakeSpacedRepetitionService()
+
+        SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+            user=self.user,
+            attempt_id=started.attempt.id,
+            answer={'translations': translations},
+            duration_ms=2000,
+        )
+
+        self.assertEqual(service.reviewed_card_ids, sorted(card.id for card in cards))
+
+    def test_fsrs_adapter_uses_timezone_aware_datetime(self):
+        card = self._card(self.words[0])
+        result = FSRSService().review(
+            card=card,
+            rating=FSRSRating.GOOD,
+            reviewed_at=timezone.now(),
+            duration_ms=1000,
+        )
+
+        self.assertTrue(timezone.is_aware(result.due_at))
+        self.assertEqual(result.parameter_set_version, 7)
+
+    def test_api_does_not_expose_fsrs_state(self):
+        card = self._card(self.words[0])
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 1, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        payload = response.data['current_exercise']
+        self.assertNotIn('fsrs_state', payload)
+        self.assertNotIn('due_at', payload)
+        self.assertNotIn('memory_card_id', payload)
+        self.assertNotIn('private_state', payload)
