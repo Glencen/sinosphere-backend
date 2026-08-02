@@ -3,12 +3,28 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class LearningItemRef:
+    item_type: str
+    item_id: int | str
+    payload: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExerciseSpec:
+    kind: str
+    handler_version: int
+    learning_items: tuple[LearningItemRef, ...]
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ExerciseGenerationContext:
     user: Any
     config: dict = field(default_factory=dict)
     topic_id: int | None = None
     session: Any | None = None
     word: Any | None = None
+    learning_items: tuple[LearningItemRef, ...] = ()
 
 
 @dataclass(frozen=True)
