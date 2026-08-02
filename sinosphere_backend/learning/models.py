@@ -32,6 +32,22 @@ class FSRSSchedulerProfile(models.Model):
         ]
 
 
+class PracticeConfiguration(models.Model):
+    key = models.SlugField(max_length=96, unique=True)
+    value = models.JSONField(default=dict, blank=True)
+    description = models.TextField(blank=True, default='')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['key']
+        indexes = [
+            models.Index(fields=['key'], name='idx_practice_config_key'),
+        ]
+
+    def __str__(self):
+        return self.key
+
+
 class MemoryCard(models.Model):
     DIRECTION_CN_TO_RU = 'cn_to_ru'
     DIRECTION_RU_TO_CN = 'ru_to_cn'
@@ -111,6 +127,7 @@ class Lesson(models.Model):
     """
     Урок - набор заданий по определенной теме
     """
+    slug = models.SlugField(max_length=96, unique=True, null=True, blank=True)
     title = models.CharField(max_length=128, verbose_name='Название урока')
     description = models.TextField(blank=True, verbose_name='Описание')
     topic = models.ForeignKey(
