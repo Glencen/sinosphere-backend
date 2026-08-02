@@ -1,4 +1,4 @@
-﻿from datetime import timedelta
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -10,7 +10,7 @@ from rest_framework.test import APIClient, APITestCase
 from dictionary.models import Word
 from learning.application.use_cases import StartExerciseUseCase
 from learning.exercises.base import ExerciseHandler
-from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult
+from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
 from learning.exercises.exceptions import InvalidExerciseConfigError, UnknownExerciseHandlerError
 from learning.exercises.handlers.multiple_choice import MultipleChoiceHandler
 from learning.exercises.registry import ExerciseHandlerRegistry
@@ -251,6 +251,7 @@ class PracticeSessionAttemptApiTests(APITestCase):
             word=self.word,
             exercise_type='multiple_choice',
             order=1,
+            position=1,
             public_payload={'attempt_id': 2, 'type': 'multiple_choice', 'word_id': self.word.id},
             grading_payload={'correct_index': 0, 'options': ['you']},
             is_correct=True,
@@ -359,6 +360,7 @@ class PracticeSessionAttemptApiTests(APITestCase):
             user=self.user,
             word=self.word,
             exercise_type='translation_ru',
+            handler_version=0,
             order=0,
             public_payload={'attempt_id': 1, 'type': 'translation_ru', 'word_id': self.word.id},
             grading_payload={'correct_answer': 'you'},
@@ -431,6 +433,7 @@ class PracticeSessionAttemptApiTests(APITestCase):
             word=self.word,
             exercise_type='matching',
             order=1,
+            position=1,
             grading_payload={'pairs': [{'translation': 'you'}]},
         )
 
@@ -447,7 +450,7 @@ class PracticeSessionAttemptApiTests(APITestCase):
             word=self.word,
             exercise_type='translation_ru',
             kind='translation_ru',
-            handler_version=1,
+            handler_version=0,
             grading_payload={'correct_answer': 'you'},
         )
 
@@ -460,3 +463,224 @@ class PracticeSessionAttemptApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['is_correct'])
         self.assertEqual(response.data['correct_answer'], 'you')
+
+from datetime import timedelta
+import random
+
+from django.db import IntegrityError
+from learning.application.composer import ExerciseComposer
+from learning.application.selection_policy import ExerciseTypeSelectionPolicy
+from learning.exercises import registry as exercise_registry
+
+
+class PracticeSessionPlanningApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='session-user', password='pass12345')
+        self.other_user = User.objects.create_user(username='other-session-user', password='pass12345')
+        UserProfile.objects.get_or_create(user=self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.words = []
+        for index in range(6):
+            self.words.append(Word.objects.create(
+                hanzi=f'w{index}',
+                pinyin_numeric=f'w{index}',
+                pinyin_graphic=f'w{index}',
+                translation=f'translation-{index}',
+                difficulty=1,
+            ))
+
+    def test_create_session_from_requested_learning_items(self):
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {
+                'requested_cards_count': 3,
+                'allowed_types': ['multiple_choice'],
+                'rng_seed': 1,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['learning_items_count'], 3)
+        self.assertEqual(response.data['visual_exercises_count'], 3)
+        self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
+        self.assertIn('current_exercise', response.data)
+        self.assertNotIn('private_state', response.data['current_exercise'])
+        self.assertNotIn('correct_index', response.data['current_exercise'])
+
+        session = PracticeSession.objects.get(id=response.data['session_id'])
+        self.assertEqual(session.requested_cards_count, 3)
+        self.assertEqual(session.generated_exercises_count, 3)
+        self.assertEqual(session.attempts.count(), 3)
+
+    def test_matching_session_separates_cards_count_from_visual_exercises_count(self):
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {
+                'requested_cards_count': 5,
+                'allowed_types': ['matching'],
+                'rng_seed': 2,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['learning_items_count'], 5)
+        self.assertLess(response.data['visual_exercises_count'], 5)
+
+        session = PracticeSession.objects.get(id=response.data['session_id'])
+        matching_attempt = session.attempts.order_by('position').first()
+        self.assertEqual(matching_attempt.kind, 'matching')
+        self.assertGreater(len(matching_attempt.learning_items), 1)
+        self.assertIn('accepted_translations', matching_attempt.private_state)
+        self.assertNotIn('accepted_translations', matching_attempt.public_payload)
+
+    def test_controlled_randomness_in_type_policy(self):
+        items = tuple(
+            LearningItemRef(item_type='word', item_id=word.id, payload={'difficulty': word.difficulty})
+            for word in self.words[:4]
+        )
+        first_policy = ExerciseTypeSelectionPolicy(handler_registry=exercise_registry, rng=random.Random(123))
+        second_policy = ExerciseTypeSelectionPolicy(handler_registry=exercise_registry, rng=random.Random(123))
+
+        first_specs = ExerciseComposer(selection_policy=first_policy).compose(
+            learning_items=items,
+            allowed_types=['multiple_choice', 'translation_ru'],
+        )
+        second_specs = ExerciseComposer(selection_policy=second_policy).compose(
+            learning_items=items,
+            allowed_types=['multiple_choice', 'translation_ru'],
+        )
+
+        self.assertEqual([spec.kind for spec in first_specs], [spec.kind for spec in second_specs])
+        self.assertGreater(len({spec.kind for spec in first_specs}), 1)
+
+    def test_get_session_does_not_regenerate_attempts(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 3, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+        session_id = create_response.data['session_id']
+        attempts_count = ExerciseAttempt.objects.filter(session_id=session_id).count()
+
+        first_get = self.client.get(f'/api/practice-sessions/{session_id}/')
+        second_get = self.client.get(f'/api/practice-sessions/{session_id}/')
+
+        self.assertEqual(first_get.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_get.status_code, status.HTTP_200_OK)
+        self.assertEqual(ExerciseAttempt.objects.filter(session_id=session_id).count(), attempts_count)
+        self.assertEqual(first_get.data['current_exercise'], second_get.data['current_exercise'])
+
+    def test_unique_position_inside_session(self):
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.words[0],
+            exercise_type='multiple_choice',
+            kind='multiple_choice',
+            position=0,
+            order=0,
+        )
+
+        with self.assertRaises(IntegrityError):
+            ExerciseAttempt.objects.create(
+                session=session,
+                user=self.user,
+                word=self.words[1],
+                exercise_type='multiple_choice',
+                kind='multiple_choice',
+                position=0,
+                order=1,
+            )
+
+    def test_restore_current_exercise_for_unfinished_session(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 2, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+        session_id = create_response.data['session_id']
+
+        response = self.client.get(f'/api/practice-sessions/{session_id}/current-exercise/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
+        self.assertEqual(response.data['current_exercise']['position'], 0)
+        self.assertNotIn('private_state', response.data['current_exercise'])
+
+    def test_session_completion_is_idempotent(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 2, 'allowed_types': ['translation_ru'], 'rng_seed': 1},
+            format='json',
+        )
+        session = PracticeSession.objects.get(id=create_response.data['session_id'])
+        attempts = list(session.attempts.order_by('position'))
+
+        for attempt in attempts:
+            response = self.client.post(
+                f'/api/exercise-attempts/{attempt.id}/submit/',
+                {'answer': {'text': attempt.private_state['correct_answer']}, 'duration_ms': 1000},
+                format='json',
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        session.refresh_from_db()
+        self.assertEqual(session.status, PracticeSession.STATUS_COMPLETED)
+        completed_at = session.completed_at
+
+        repeat_response = self.client.post(
+            f'/api/exercise-attempts/{attempts[-1].id}/submit/',
+            {'answer': {'text': attempts[-1].private_state['correct_answer']}, 'duration_ms': 1000},
+            format='json',
+        )
+
+        session.refresh_from_db()
+        self.assertEqual(repeat_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(session.status, PracticeSession.STATUS_COMPLETED)
+        self.assertEqual(session.completed_at, completed_at)
+
+    def test_expired_session_blocks_submit(self):
+        session = PracticeSession.objects.create(
+            user=self.user,
+            status=PracticeSession.STATUS_IN_PROGRESS,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        attempt = ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.words[0],
+            exercise_type='multiple_choice',
+            kind='multiple_choice',
+            handler_version=1,
+            position=0,
+            order=0,
+            private_state={'word_id': self.words[0].id, 'options': ['wrong', 'translation-0'], 'correct_index': 1},
+        )
+
+        response = self.client.post(
+            f'/api/exercise-attempts/{attempt.id}/submit/',
+            {'answer': {'selected_index': 1}, 'duration_ms': 1000},
+            format='json',
+        )
+
+        session.refresh_from_db()
+        attempt.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_410_GONE)
+        self.assertEqual(session.status, PracticeSession.STATUS_EXPIRED)
+        self.assertEqual(attempt.status, ExerciseAttempt.STATUS_EXPIRED)
+
+    def test_rollback_when_handler_generation_fails(self):
+        with patch.object(MultipleChoiceHandler, 'generate', side_effect=InvalidExerciseConfigError('broken handler')):
+            response = self.client.post(
+                '/api/practice-sessions/',
+                {'requested_cards_count': 2, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(PracticeSession.objects.filter(user=self.user).count(), 0)
+        self.assertEqual(ExerciseAttempt.objects.filter(user=self.user).count(), 0)
