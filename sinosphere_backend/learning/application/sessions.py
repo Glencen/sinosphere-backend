@@ -213,6 +213,32 @@ def session_summary(session):
     }
 
 
+def exercise_attempt_result_dto(attempt):
+    base = {
+        'attempt_id': attempt.id,
+        'session_id': attempt.session_id,
+        'status': attempt.status,
+        'kind': attempt.kind or attempt.exercise_type,
+        'handler_version': attempt.handler_version,
+        'submitted_at': attempt.submitted_at,
+        'session_status': attempt.session.status,
+        'progress': session_progress(attempt.session),
+    }
+    if attempt.status != ExerciseAttempt.STATUS_SUBMITTED or attempt.is_correct is None:
+        return base
+
+    result = attempt.result or {}
+    feedback = result.get('feedback') or {}
+    return {
+        **base,
+        'is_correct': bool(attempt.is_correct),
+        'score': float(result.get('score', attempt.score or 0)),
+        'correct_answer': feedback.get('correct_answer', ''),
+        'explanation': feedback.get('explanation', ''),
+        'item_results': result.get('item_results') or [],
+    }
+
+
 def public_attempt_payload(attempt):
     if not attempt:
         return None
