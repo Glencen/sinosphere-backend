@@ -6,7 +6,6 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
-    ReviewLog,
     UserExerciseHistory,
     UserLearningProfile,
     UserProfile,
@@ -14,6 +13,7 @@ from .models import (
     UserWord,
 )
 from dictionary.models import Word
+from learning.models import MemoryCard, MemoryReview
 from dictionary.serializers import TopicSerializer, WordSerializer
 
 
@@ -62,34 +62,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
 class UserWordSerializer(serializers.ModelSerializer):
     word = serializers.SerializerMethodField()
     word_id = serializers.IntegerField(write_only=True, required=False)
-    mastery_score = serializers.FloatField(read_only=True)
-    is_learned = serializers.BooleanField(read_only=True)
-    review_urgency = serializers.SerializerMethodField()
 
     class Meta:
         model = UserWord
-        fields = [
-            'id', 'user', 'word', 'word_id', 'added_date', 'notes',
-            'due', 'stability', 'difficulty', 'elapsed_days', 'scheduled_days',
-            'reps', 'lapses', 'state', 'last_review', 'total_attempts',
-            'correct_attempts', 'avg_response_time', 'consecutive_correct',
-            'mastery_score', 'is_learned', 'review_urgency',
-        ]
-        read_only_fields = [
-            'user', 'word', 'added_date', 'due', 'stability', 'difficulty',
-            'elapsed_days', 'scheduled_days', 'reps', 'lapses', 'state',
-            'last_review', 'total_attempts', 'correct_attempts',
-            'avg_response_time', 'consecutive_correct', 'mastery_score',
-            'is_learned', 'review_urgency',
-        ]
+        fields = ['id', 'user', 'word', 'word_id', 'added_date', 'notes']
+        read_only_fields = ['user', 'word', 'added_date']
 
     def get_word(self, obj):
         return _word_payload(obj.word)
-
-
-
-    def get_review_urgency(self, obj):
-        return obj.get_review_urgency()
 
     def validate(self, attrs):
         request = self.context.get('request')
@@ -122,20 +102,78 @@ class UserWordSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class UserWordReviewSerializer(serializers.Serializer):
-    quality = serializers.IntegerField(min_value=0, max_value=5)
-    time_spent = serializers.FloatField(default=0)
-    exercise_type = serializers.CharField(default='manual_review')
+class UserWordDetailSerializer(UserWordSerializer):
+    class Meta(UserWordSerializer.Meta):
+        fields = ['id', 'user', 'word', 'added_date', 'notes']
+        read_only_fields = ['user', 'word', 'added_date']
 
-    def update(self, instance, validated_data):
-        # Legacy endpoint compatibility: quality 0-2 is a failed review, 3-5 is successful.
-        is_correct = validated_data['quality'] >= 3
-        instance.update_review(
-            is_correct=is_correct,
-            response_time=validated_data.get('time_spent', 0),
-            exercise_type=validated_data.get('exercise_type', 'manual_review'),
-        )
-        return instance
+
+class UserWordListSerializer(serializers.ModelSerializer):
+    word = serializers.SerializerMethodField()
+
+    class Meta:
+        model = UserWord
+        fields = ['id', 'word', 'added_date', 'notes']
+
+    def get_word(self, obj):
+        return _word_payload(obj.word)
+
+
+class MemoryCardReviewQueueSerializer(serializers.ModelSerializer):
+    word = serializers.SerializerMethodField()
+    next_review = serializers.DateTimeField(source='due_at', read_only=True)
+    review_urgency = serializers.SerializerMethodField()
+    reps = serializers.SerializerMethodField()
+    last_review = serializers.DateTimeField(source='last_review_at', read_only=True)
+    stability = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MemoryCard
+        fields = [
+            'id', 'word', 'direction', 'due_at', 'next_review', 'last_review',
+            'review_urgency', 'reps', 'stability',
+        ]
+
+    def get_word(self, obj):
+        return _word_payload(obj.learning_item)
+
+    def get_review_urgency(self, obj):
+        now = timezone.now()
+        if obj.due_at <= now:
+            hours_overdue = (now - obj.due_at).total_seconds() / 3600
+            return min(10.0, 5.0 + hours_overdue / 24)
+        hours_until_due = (obj.due_at - now).total_seconds() / 3600
+        if hours_until_due < 24:
+            return 5.0
+        if hours_until_due < 48:
+            return 3.0
+        return 1.0
+
+    def get_reps(self, obj):
+        return obj.reviews.count()
+
+    def get_stability(self, obj):
+        state = obj.fsrs_state or {}
+        return state.get('stability') or state.get('s') or 0
+
+
+class MemoryReviewSerializer(serializers.ModelSerializer):
+    card = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MemoryReview
+        fields = [
+            'id', 'card', 'rating', 'reviewed_at', 'duration_ms',
+            'scheduler_version', 'parameter_set_version',
+        ]
+
+    def get_card(self, obj):
+        card = obj.memory_card
+        return {
+            'id': card.id,
+            'direction': card.direction,
+            'word': _word_payload(card.learning_item),
+        }
 
 
 class UserLearningProfileSerializer(serializers.ModelSerializer):
@@ -224,109 +262,6 @@ class UserExerciseHistorySerializer(serializers.ModelSerializer):
         return None
 
 
-class ReviewLogSerializer(serializers.ModelSerializer):
-    user_word_info = serializers.SerializerMethodField()
-    rating_display = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ReviewLog
-        fields = [
-            'id', 'user_word', 'user_word_info', 'rating', 'rating_display',
-            'is_correct', 'response_time', 'exercise_type', 'review_date',
-            'scheduled_days', 'word',
-        ]
-        read_only_fields = ['review_date']
-
-    def get_user_word_info(self, obj):
-        return {
-            'id': obj.user_word.id,
-            'word_id': obj.user_word.word_id,
-            'state': obj.user_word.state,
-            'reps': obj.user_word.reps,
-            'lapses': obj.user_word.lapses,
-        }
-
-    def get_rating_display(self, obj):
-        rating_map = {
-            1: 'Again',
-            2: 'Hard',
-            3: 'Good',
-            4: 'Easy',
-        }
-        return rating_map.get(obj.rating, str(obj.rating))
-
-
-
-class UserWordDetailSerializer(serializers.ModelSerializer):
-    word = serializers.SerializerMethodField()
-    user = serializers.StringRelatedField(read_only=True)
-    mastery_score = serializers.FloatField(read_only=True)
-    is_learned = serializers.BooleanField(read_only=True)
-    next_review_days = serializers.SerializerMethodField()
-    review_urgency = serializers.SerializerMethodField()
-    review_history = serializers.SerializerMethodField()
-
-    class Meta:
-        model = UserWord
-        fields = [
-            'id', 'user', 'word', 'added_date', 'notes',
-            'due', 'stability', 'difficulty', 'elapsed_days', 'scheduled_days',
-            'reps', 'lapses', 'state', 'last_review', 'total_attempts',
-            'correct_attempts', 'avg_response_time', 'consecutive_correct',
-            'mastery_score', 'is_learned', 'next_review_days',
-            'review_urgency', 'review_history',
-        ]
-        read_only_fields = [
-            'user', 'word', 'added_date', 'due', 'stability', 'difficulty',
-            'elapsed_days', 'scheduled_days', 'reps', 'lapses', 'state',
-            'last_review', 'total_attempts', 'correct_attempts',
-            'avg_response_time', 'consecutive_correct', 'mastery_score',
-            'is_learned', 'next_review_days', 'review_urgency',
-            'review_history',
-        ]
-
-    def get_word(self, obj):
-        return _word_payload(obj.word)
-
-
-
-    def get_next_review_days(self, obj):
-        if obj.due and obj.due > timezone.now():
-            return (obj.due - timezone.now()).days
-        return 0
-
-    def get_review_urgency(self, obj):
-        return obj.get_review_urgency()
-
-    def get_review_history(self, obj):
-        logs = ReviewLog.objects.filter(user_word=obj).order_by('-review_date')[:10]
-        return ReviewLogSerializer(logs, many=True).data
-
-
-class UserWordListSerializer(serializers.ModelSerializer):
-    word = serializers.SerializerMethodField()
-    mastery_score = serializers.FloatField(read_only=True)
-    is_learned = serializers.BooleanField(read_only=True)
-    review_urgency = serializers.SerializerMethodField()
-    next_review = serializers.DateTimeField(source='due', read_only=True)
-
-    class Meta:
-        model = UserWord
-        fields = [
-            'id', 'word', 'state', 'due', 'next_review',
-            'last_review', 'reps', 'lapses', 'mastery_score', 'is_learned',
-            'total_attempts', 'correct_attempts', 'avg_response_time',
-            'review_urgency',
-        ]
-
-    def get_word(self, obj):
-        return _word_payload(obj.word)
-
-
-
-    def get_review_urgency(self, obj):
-        return obj.get_review_urgency()
-
 
 class UserExerciseStatsSerializer(serializers.Serializer):
     date = serializers.DateField()
@@ -346,5 +281,6 @@ class UserLearningAnalyticsSerializer(serializers.Serializer):
     streak_days = serializers.IntegerField()
     top_topics = serializers.ListField(child=serializers.DictField())
     weak_words = serializers.ListField(child=serializers.DictField())
+
 
 
