@@ -11,7 +11,7 @@ from dictionary.models import Word
 from learning.application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
 from learning.exercises.base import ExerciseHandler
 from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
-from learning.exercises.exceptions import InvalidExerciseConfigError, UnknownExerciseHandlerError
+from learning.exercises.exceptions import InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
 from learning.exercises.handlers.multiple_choice import MultipleChoiceHandler
 from learning.exercises.handlers.translation_cn import TranslationCnHandler
 from learning.exercises.handlers.writing import WritingHandler
@@ -470,6 +470,30 @@ class PracticeSessionAttemptApiTests(APITestCase):
         self.assertTrue(response.data['is_correct'])
         self.assertEqual(response.data['correct_answer'], 'you')
 
+    def test_legacy_submit_endpoint_accepts_scalar_writing_answer_for_compatibility(self):
+        handler = WritingHandler()
+        generated = handler.generate(ExerciseGenerationContext(user=self.user, word=self.word, config={}))
+        session = PracticeSession.objects.create(user=self.user)
+        attempt = ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            public_payload=generated.public_payload,
+            private_state=generated.private_state,
+        )
+
+        response = self.client.post(
+            '/api/learning/exercises/submit/',
+            {'attempt_id': attempt.id, 'answer': '', 'time_spent': 1},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['is_correct'])
+
 from datetime import timedelta
 import random
 
@@ -496,6 +520,20 @@ class PracticeSessionPlanningApiTests(APITestCase):
                 difficulty=1,
             ))
 
+    def assertPublicExerciseContract(self, payload):
+        self.assertIsInstance(payload, dict)
+        self.assertIn('kind', payload)
+        self.assertIn('handler_version', payload)
+        self.assertIn('attempt_id', payload)
+        self.assertIn('session_id', payload)
+        self.assertNotIn('private_state', payload)
+        self.assertNotIn('accepted_answers', payload)
+        self.assertNotIn('correct_index', payload)
+        self.assertNotIn('correct_pairs', payload)
+        self.assertNotIn('memory_card_id', payload)
+        self.assertNotIn('fsrs_state', payload)
+        self.assertNotIn('due_at', payload)
+
     def test_create_session_from_requested_learning_items(self):
         response = self.client.post(
             '/api/practice-sessions/',
@@ -512,13 +550,149 @@ class PracticeSessionPlanningApiTests(APITestCase):
         self.assertEqual(response.data['visual_exercises_count'], 3)
         self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
         self.assertIn('current_exercise', response.data)
-        self.assertNotIn('private_state', response.data['current_exercise'])
-        self.assertNotIn('correct_index', response.data['current_exercise'])
+        self.assertPublicExerciseContract(response.data['current_exercise'])
+        self.assertEqual(response.data['current_exercise']['kind'], 'multiple_choice')
+        self.assertEqual(response.data['current_exercise'].get('type'), 'multiple_choice')
 
         session = PracticeSession.objects.get(id=response.data['session_id'])
         self.assertEqual(session.requested_cards_count, 3)
         self.assertEqual(session.generated_exercises_count, 3)
         self.assertEqual(session.attempts.count(), 3)
+
+    def test_create_session_response_contract(self):
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 1, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
+        self.assertIn('session_id', response.data)
+        self.assertIn('current_attempt_id', response.data)
+        self.assertIn('current_exercise', response.data)
+        self.assertIn('progress', response.data)
+        self.assertPublicExerciseContract(response.data['current_exercise'])
+
+    def test_session_detail_response_contract(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 1, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+
+        response = self.client.get(f"/api/practice-sessions/{create_response.data['session_id']}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['current_attempt_id'], create_response.data['current_attempt_id'])
+        self.assertIn('progress', response.data)
+        self.assertPublicExerciseContract(response.data['current_exercise'])
+
+    def test_current_exercise_response_contract(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 1, 'allowed_types': ['multiple_choice'], 'rng_seed': 1},
+            format='json',
+        )
+
+        response = self.client.get(f"/api/practice-sessions/{create_response.data['session_id']}/current-exercise/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
+        self.assertIn('progress', response.data)
+        self.assertPublicExerciseContract(response.data['current_exercise'])
+
+    def test_writing_api_payload_and_submit_contract_for_confirmation_mode(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 1, 'allowed_types': ['writing'], 'rng_seed': 1},
+            format='json',
+        )
+
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        exercise = create_response.data['current_exercise']
+        self.assertPublicExerciseContract(exercise)
+        self.assertEqual(exercise['kind'], 'writing')
+        self.assertEqual(exercise['submission_mode'], 'confirmation')
+
+        submit_response = self.client.post(
+            f"/api/exercise-attempts/{exercise['attempt_id']}/submit/",
+            {'answer': {'completed': True}, 'duration_ms': 1000},
+            format='json',
+        )
+
+        self.assertEqual(submit_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(submit_response.data['is_correct'])
+        self.assertIn('session_status', submit_response.data)
+        self.assertIn('progress', submit_response.data)
+
+    def test_writing_api_payload_and_submit_contract_for_text_mode(self):
+        create_response = self.client.post(
+            '/api/practice-sessions/',
+            {
+                'requested_cards_count': 1,
+                'allowed_types': ['writing'],
+                'handler_config': {'submission_mode': 'text'},
+                'rng_seed': 1,
+            },
+            format='json',
+        )
+
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        exercise = create_response.data['current_exercise']
+        attempt = ExerciseAttempt.objects.get(id=exercise['attempt_id'])
+        self.assertPublicExerciseContract(exercise)
+        self.assertEqual(exercise['kind'], 'writing')
+        self.assertEqual(exercise['submission_mode'], 'text')
+
+        submit_response = self.client.post(
+            f"/api/exercise-attempts/{exercise['attempt_id']}/submit/",
+            {'answer': {'text': attempt.private_state['correct_answer']}, 'duration_ms': 1000},
+            format='json',
+        )
+
+        self.assertEqual(submit_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(submit_response.data['is_correct'])
+
+    def test_writing_api_rejects_invalid_and_ambiguous_answers(self):
+        confirmation_response = self.client.post(
+            '/api/practice-sessions/',
+            {'requested_cards_count': 1, 'allowed_types': ['writing'], 'rng_seed': 1},
+            format='json',
+        )
+        confirmation_attempt_id = confirmation_response.data['current_exercise']['attempt_id']
+
+        wrong_confirmation = self.client.post(
+            f'/api/exercise-attempts/{confirmation_attempt_id}/submit/',
+            {'answer': {'text': 'anything'}, 'duration_ms': 1000},
+            format='json',
+        )
+        ambiguous_confirmation = self.client.post(
+            f'/api/exercise-attempts/{confirmation_attempt_id}/submit/',
+            {'answer': {'text': 'anything', 'completed': True}, 'duration_ms': 1000},
+            format='json',
+        )
+
+        text_response = self.client.post(
+            '/api/practice-sessions/',
+            {
+                'requested_cards_count': 1,
+                'allowed_types': ['writing'],
+                'handler_config': {'submission_mode': 'text'},
+                'rng_seed': 2,
+            },
+            format='json',
+        )
+        text_attempt_id = text_response.data['current_exercise']['attempt_id']
+        wrong_text = self.client.post(
+            f'/api/exercise-attempts/{text_attempt_id}/submit/',
+            {'answer': {'completed': True}, 'duration_ms': 1000},
+            format='json',
+        )
+
+        self.assertEqual(wrong_confirmation.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(ambiguous_confirmation.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(wrong_text.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_matching_session_separates_cards_count_from_visual_exercises_count(self):
         response = self.client.post(
@@ -579,6 +753,125 @@ class PracticeSessionPlanningApiTests(APITestCase):
         self.assertEqual(ExerciseAttempt.objects.filter(session_id=session_id).count(), attempts_count)
         self.assertEqual(first_get.data['current_exercise'], second_get.data['current_exercise'])
 
+    def test_terminal_session_detail_does_not_return_current_exercise(self):
+        for terminal_status in (
+            PracticeSession.STATUS_COMPLETED,
+            PracticeSession.STATUS_EXPIRED,
+            PracticeSession.STATUS_ABANDONED,
+        ):
+            session = PracticeSession.objects.create(
+                user=self.user,
+                status=terminal_status,
+                requested_cards_count=1,
+                generated_exercises_count=1,
+            )
+            ExerciseAttempt.objects.create(
+                session=session,
+                user=self.user,
+                word=self.words[0],
+                exercise_type='multiple_choice',
+                kind='multiple_choice',
+                handler_version=1,
+                position=0,
+                order=0,
+                public_payload={'kind': 'multiple_choice', 'type': 'multiple_choice'},
+                private_state={'word_id': self.words[0].id, 'options': ['wrong', 'translation-0'], 'correct_index': 1},
+            )
+
+            response = self.client.get(f'/api/practice-sessions/{session.id}/')
+
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(response.data['status'], terminal_status)
+            self.assertIsNone(response.data['current_attempt_id'])
+            self.assertIsNone(response.data['current_exercise'])
+
+    def test_terminal_current_exercise_endpoint_returns_null(self):
+        for terminal_status in (
+            PracticeSession.STATUS_COMPLETED,
+            PracticeSession.STATUS_EXPIRED,
+            PracticeSession.STATUS_ABANDONED,
+        ):
+            session = PracticeSession.objects.create(user=self.user, status=terminal_status)
+            ExerciseAttempt.objects.create(
+                session=session,
+                user=self.user,
+                word=self.words[0],
+                exercise_type='multiple_choice',
+                kind='multiple_choice',
+                handler_version=1,
+                position=0,
+                order=0,
+                public_payload={'kind': 'multiple_choice', 'type': 'multiple_choice'},
+                private_state={'word_id': self.words[0].id, 'options': ['wrong', 'translation-0'], 'correct_index': 1},
+            )
+
+            response = self.client.get(f'/api/practice-sessions/{session.id}/current-exercise/')
+
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(response.data['status'], terminal_status)
+            self.assertIsNone(response.data['current_exercise'])
+
+    def test_in_progress_session_returns_current_exercise(self):
+        session = PracticeSession.objects.create(
+            user=self.user,
+            status=PracticeSession.STATUS_IN_PROGRESS,
+            requested_cards_count=1,
+            generated_exercises_count=1,
+        )
+        attempt = ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.words[0],
+            exercise_type='multiple_choice',
+            kind='multiple_choice',
+            handler_version=1,
+            position=0,
+            order=0,
+            public_payload={'kind': 'multiple_choice', 'type': 'multiple_choice'},
+            private_state={'word_id': self.words[0].id, 'options': ['wrong', 'translation-0'], 'correct_index': 1},
+        )
+
+        detail_response = self.client.get(f'/api/practice-sessions/{session.id}/')
+        current_response = self.client.get(f'/api/practice-sessions/{session.id}/current-exercise/')
+
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(current_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_response.data['current_attempt_id'], attempt.id)
+        self.assertEqual(current_response.data['current_exercise']['attempt_id'], attempt.id)
+        self.assertPublicExerciseContract(detail_response.data['current_exercise'])
+        self.assertPublicExerciseContract(current_response.data['current_exercise'])
+
+    def test_session_without_pending_attempt_returns_null_current_exercise(self):
+        session = PracticeSession.objects.create(
+            user=self.user,
+            status=PracticeSession.STATUS_IN_PROGRESS,
+            requested_cards_count=1,
+            generated_exercises_count=1,
+        )
+        ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.words[0],
+            exercise_type='multiple_choice',
+            kind='multiple_choice',
+            handler_version=1,
+            position=0,
+            order=0,
+            is_correct=True,
+            status=ExerciseAttempt.STATUS_SUBMITTED,
+            public_payload={'kind': 'multiple_choice', 'type': 'multiple_choice'},
+            private_state={'word_id': self.words[0].id, 'options': ['wrong', 'translation-0'], 'correct_index': 1},
+        )
+
+        detail_response = self.client.get(f'/api/practice-sessions/{session.id}/')
+        current_response = self.client.get(f'/api/practice-sessions/{session.id}/current-exercise/')
+
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(current_response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(detail_response.data['current_attempt_id'])
+        self.assertIsNone(detail_response.data['current_exercise'])
+        self.assertIsNone(current_response.data['current_exercise'])
+
     def test_unique_position_inside_session(self):
         session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
         ExerciseAttempt.objects.create(
@@ -615,7 +908,7 @@ class PracticeSessionPlanningApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
         self.assertEqual(response.data['current_exercise']['position'], 0)
-        self.assertNotIn('private_state', response.data['current_exercise'])
+        self.assertPublicExerciseContract(response.data['current_exercise'])
 
     def test_session_completion_is_idempotent(self):
         create_response = self.client.post(
@@ -633,6 +926,15 @@ class PracticeSessionPlanningApiTests(APITestCase):
                 format='json',
             )
             self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertIn('attempt_id', response.data)
+            self.assertIn('session_id', response.data)
+            self.assertIn('is_correct', response.data)
+            self.assertIn('score', response.data)
+            self.assertIn('correct_answer', response.data)
+            self.assertIn('explanation', response.data)
+            self.assertIn('item_results', response.data)
+            self.assertIn('session_status', response.data)
+            self.assertIn('progress', response.data)
 
         session.refresh_from_db()
         self.assertEqual(session.status, PracticeSession.STATUS_COMPLETED)
@@ -986,6 +1288,8 @@ class RemainingExerciseHandlersTests(TestCase):
         handler = WritingHandler()
         generated = handler.generate(ExerciseGenerationContext(user=self.user, word=self.word, config={}))
         self.assertIn('stroke_data', generated.public_payload)
+        self.assertEqual(generated.public_payload['kind'], 'writing')
+        self.assertEqual(generated.public_payload['submission_mode'], 'confirmation')
         self.assertNotIn('correct_answer', generated.public_payload)
         attempt = ExerciseAttempt.objects.create(
             session=self.session,
@@ -1001,6 +1305,104 @@ class RemainingExerciseHandlersTests(TestCase):
 
         self.assertTrue(grade.is_fully_correct)
         self.assertEqual(grade.item_results[0].source_item_id, self.word.id)
+
+    def test_writing_handler_public_payload_supports_text_mode(self):
+        handler = WritingHandler()
+
+        generated = handler.generate(ExerciseGenerationContext(
+            user=self.user,
+            word=self.word,
+            config={'submission_mode': 'text'},
+        ))
+
+        self.assertEqual(generated.public_payload['kind'], 'writing')
+        self.assertEqual(generated.public_payload['type'], 'writing')
+        self.assertEqual(generated.public_payload['submission_mode'], 'text')
+        self.assertEqual(generated.private_state['submission_mode'], 'text')
+        self.assertNotIn('private_state', generated.public_payload)
+        self.assertNotIn('accepted_answers', generated.public_payload)
+        self.assertNotIn('correct_index', generated.public_payload)
+        self.assertNotIn('correct_pairs', generated.public_payload)
+        self.assertNotIn('memory_card_id', generated.public_payload)
+        self.assertNotIn('fsrs_state', generated.public_payload)
+        self.assertNotIn('due_at', generated.public_payload)
+
+    def test_writing_handler_accepts_text_answer_in_text_mode(self):
+        handler = WritingHandler()
+        generated = handler.generate(ExerciseGenerationContext(
+            user=self.user,
+            word=self.word,
+            config={'submission_mode': 'text'},
+        ))
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            public_payload=generated.public_payload,
+            private_state=generated.private_state,
+        )
+
+        grade = handler.grade(attempt, {'text': 'зЊ«'})
+
+        self.assertTrue(grade.is_fully_correct)
+
+    def test_writing_handler_rejects_wrong_format_for_text_mode(self):
+        handler = WritingHandler()
+        generated = handler.generate(ExerciseGenerationContext(
+            user=self.user,
+            word=self.word,
+            config={'submission_mode': 'text'},
+        ))
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            public_payload=generated.public_payload,
+            private_state=generated.private_state,
+        )
+
+        with self.assertRaises(InvalidExerciseAnswerError):
+            handler.validate_answer(attempt, {'completed': True})
+
+    def test_writing_handler_rejects_wrong_format_for_confirmation_mode(self):
+        handler = WritingHandler()
+        generated = handler.generate(ExerciseGenerationContext(user=self.user, word=self.word, config={}))
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            public_payload=generated.public_payload,
+            private_state=generated.private_state,
+        )
+
+        with self.assertRaises(InvalidExerciseAnswerError):
+            handler.validate_answer(attempt, {'text': 'зЊ«'})
+
+    def test_writing_handler_rejects_ambiguous_answer(self):
+        handler = WritingHandler()
+        generated = handler.generate(ExerciseGenerationContext(user=self.user, word=self.word, config={}))
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type=handler.kind,
+            kind=handler.kind,
+            handler_version=handler.version,
+            public_payload=generated.public_payload,
+            private_state=generated.private_state,
+        )
+
+        with self.assertRaises(InvalidExerciseAnswerError):
+            handler.validate_answer(attempt, {'text': 'зЊ«', 'completed': True})
 
 
 class ExerciseSystemEndToEndTests(APITestCase):
