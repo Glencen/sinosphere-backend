@@ -170,14 +170,20 @@ class DailyGoal(models.Model):
 
 
 class PracticeSession(models.Model):
-    STATUS_ACTIVE = 'active'
+    STATUS_CREATED = 'created'
+    STATUS_IN_PROGRESS = 'in_progress'
     STATUS_COMPLETED = 'completed'
     STATUS_ABANDONED = 'abandoned'
+    STATUS_EXPIRED = 'expired'
+    STATUS_ACTIVE = 'active'
 
     STATUS_CHOICES = [
-        (STATUS_ACTIVE, 'Active'),
+        (STATUS_CREATED, 'Created'),
+        (STATUS_IN_PROGRESS, 'In progress'),
         (STATUS_COMPLETED, 'Completed'),
         (STATUS_ABANDONED, 'Abandoned'),
+        (STATUS_EXPIRED, 'Expired'),
+        (STATUS_ACTIVE, 'Active'),
     ]
 
     user = models.ForeignKey(
@@ -194,10 +200,15 @@ class PracticeSession(models.Model):
     )
     session_type = models.CharField(max_length=32, default='mixed')
     requested_count = models.PositiveSmallIntegerField(default=10)
+    requested_cards_count = models.PositiveIntegerField(default=10)
+    generated_exercises_count = models.PositiveIntegerField(default=0)
     settings = models.JSONField(default=dict, blank=True)
-    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    generation_config = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_CREATED)
+    started_at = models.DateTimeField(auto_now_add=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
