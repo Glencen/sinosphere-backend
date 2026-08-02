@@ -1,4 +1,4 @@
-﻿import random
+import random
 
 
 class ExerciseTypeSelectionPolicy:
@@ -22,9 +22,9 @@ class ExerciseTypeSelectionPolicy:
 
     def _is_supported(self, kind, learning_item, remaining_items_count):
         requirements = {
-            'multiple_choice': lambda: learning_item.item_type == 'word',
-            'translation_ru': lambda: learning_item.item_type == 'word',
-            'matching': lambda: learning_item.item_type == 'word' and remaining_items_count >= 2,
+            'multiple_choice': lambda: learning_item.item_type in ('word', 'memory_card'),
+            'translation_ru': lambda: learning_item.item_type in ('word', 'memory_card'),
+            'matching': lambda: learning_item.item_type in ('word', 'memory_card') and remaining_items_count >= 2,
         }
         return requirements.get(kind, lambda: False)()
 

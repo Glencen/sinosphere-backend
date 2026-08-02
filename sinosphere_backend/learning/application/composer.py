@@ -1,4 +1,4 @@
-﻿from learning.exercises.dto import ExerciseSpec
+from learning.exercises.dto import ExerciseSpec
 
 
 class ExerciseComposer:
@@ -61,7 +61,7 @@ class ExerciseComposer:
         for item in remaining_items:
             if item.item_id in used_item_ids:
                 continue
-            if item.item_type != 'word':
+            if item.item_type not in ('word', 'memory_card'):
                 continue
             group.append(item)
             if len(group) >= self.matching_group_size:
