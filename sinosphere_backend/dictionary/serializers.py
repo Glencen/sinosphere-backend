@@ -1,6 +1,19 @@
 from rest_framework import serializers
 from django.db import transaction
-from .models import Word, WordComposition, Tag, PartOfSpeech, WordTag, WordPartOfSpeech, Topic, ExampleSentence
+from .models import (
+    Word,
+    WordComposition,
+    Tag,
+    PartOfSpeech,
+    WordTag,
+    WordPartOfSpeech,
+    Topic,
+    ExampleSentence,
+    Translation,
+    WordTranslation,
+    WordStructure,
+    WordStructureType,
+)
 
 class TopicSerializer(serializers.ModelSerializer):
     subtopics_count = serializers.SerializerMethodField()
@@ -42,6 +55,36 @@ class PartOfSpeechSerializer(serializers.ModelSerializer):
     class Meta:
         model = PartOfSpeech
         fields = ['name']
+
+
+class TranslationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Translation
+        fields = ['language', 'text']
+
+
+class WordTranslationSerializer(serializers.ModelSerializer):
+    language = serializers.CharField(source='translation.language', read_only=True)
+    text = serializers.CharField(source='translation.text', read_only=True)
+
+    class Meta:
+        model = WordTranslation
+        fields = ['id', 'language', 'text', 'order', 'is_primary', 'source']
+
+
+class WordStructureTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WordStructureType
+        fields = ['slug', 'name', 'description']
+
+
+class WordStructureSerializer(serializers.ModelSerializer):
+    type = serializers.CharField(source='structure_type.slug', read_only=True)
+    name = serializers.CharField(source='structure_type.name', read_only=True)
+
+    class Meta:
+        model = WordStructure
+        fields = ['type', 'name', 'description']
 
 class WordCompositionSerializer(serializers.ModelSerializer):
     child_word_hanzi = serializers.CharField(write_only=True, required=True)
@@ -255,6 +298,8 @@ class WordPartOfSpeechSerializer(serializers.ModelSerializer):
 class WordSerializer(serializers.ModelSerializer):
     tags = WordTagSerializer(many=True, read_only=True, source='word_tags')
     parts_of_speech = WordPartOfSpeechSerializer(many=True, read_only=True)
+    translations = WordTranslationSerializer(many=True, read_only=True, source='word_translations')
+    structure = WordStructureSerializer(read_only=True)
     components = WordCompositionSerializer(many=True, read_only=True)
     used_in_words = WordCompositionSerializer(many=True, read_only=True)
     topics = serializers.SerializerMethodField()
@@ -274,9 +319,9 @@ class WordSerializer(serializers.ModelSerializer):
     class Meta:
         model = Word
         fields = [
-            'id', 'hanzi', 'pinyin', 'pinyin_numeric', 'pinyin_graphic', 
-            'translation', 'difficulty', 'tags', 'parts_of_speech',
-            'components', 'used_in_words', 'topics', 'tag_names', 
+            'id', 'hanzi', 'traditional', 'pinyin', 'pinyin_numeric', 'pinyin_graphic',
+            'translation', 'translations', 'difficulty', 'frequency_rank', 'radical',
+            'structure', 'tags', 'parts_of_speech', 'components', 'used_in_words', 'topics', 'tag_names',
             'part_of_speech_names'
         ]
     

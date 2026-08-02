@@ -439,7 +439,8 @@ class WordSearchView(APIView):
                 Q(hanzi__icontains=search_query) |
                 Q(pinyin_numeric__icontains=search_query) |
                 Q(pinyin_graphic__icontains=search_query) |
-                Q(translation__icontains=search_query)
+                Q(translation__icontains=search_query) |
+                Q(word_translations__translation__text__icontains=search_query)
             )
         
         difficulty = query_params.get('difficulty')
