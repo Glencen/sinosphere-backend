@@ -1,4 +1,5 @@
 from learning.exercises.dto import ExerciseSpec
+from learning.application.handler_versions import active_handler_version
 
 
 class ExerciseComposer:
@@ -44,7 +45,7 @@ class ExerciseComposer:
 
             specs.append(ExerciseSpec(
                 kind=kind,
-                handler_version=1,
+                handler_version=active_handler_version(kind),
                 learning_items=tuple(group),
                 metadata={
                     'visual_exercise_index': len(specs),

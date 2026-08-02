@@ -1,3 +1,6 @@
+import random
+import secrets
+
 from dictionary.models import Word
 
 from learning.models import ExerciseAttempt
@@ -126,3 +129,135 @@ class MatchingHandler(ExerciseHandler):
         if context.word:
             return [context.word]
         return []
+
+
+class MatchingHandlerV2(MatchingHandler):
+    version = 2
+
+    def generate(self, context: ExerciseGenerationContext) -> GeneratedExercise:
+        self.validate_config(context.config)
+        words = self._words_from_context(context)
+        if len(words) < 2:
+            raise InvalidExerciseConfigError('matching exercise requires at least 2 words.')
+
+        source_item_ids = [
+            item.item_id
+            for item in context.learning_items
+        ] if context.learning_items else [word.id for word in words]
+
+        left_items = []
+        right_items = []
+        correct_matches = {}
+        left_item_sources = {}
+        right_item_sources = {}
+
+        used_ids = set()
+        for index, word in enumerate(words):
+            left_id = self._public_id('left', used_ids)
+            right_id = self._public_id('right', used_ids)
+            translation = _first_translation(word.translation)
+            source_item_id = source_item_ids[index] if index < len(source_item_ids) else word.id
+
+            left_items.append({
+                'id': left_id,
+                'chinese': word.hanzi,
+                'pinyin': word.pinyin_graphic,
+            })
+            right_items.append({
+                'id': right_id,
+                'text': translation,
+            })
+            correct_matches[left_id] = right_id
+            left_item_sources[left_id] = source_item_id
+            right_item_sources[right_id] = source_item_id
+
+        random.SystemRandom().shuffle(right_items)
+
+        public_payload = {
+            'type': self.kind,
+            'kind': self.kind,
+            'handler_version': self.version,
+            'question': 'Match Chinese words with their translations',
+            'instructions': 'Match Chinese words with their translations',
+            'hint': '',
+            'difficulty': max(word.difficulty for word in words),
+            'left_items': left_items,
+            'right_items': right_items,
+        }
+        private_state = {
+            'correct_matches': correct_matches,
+            'left_item_sources': left_item_sources,
+            'right_item_sources': right_item_sources,
+            'left_ids': [item['id'] for item in left_items],
+            'right_ids': [item['id'] for item in right_items],
+            'correct_answer': self._correct_answer(words),
+        }
+        metadata = {
+            'kind': self.kind,
+            'handler_version': self.version,
+            'source_item_ids': source_item_ids,
+        }
+        return GeneratedExercise(public_payload, private_state, metadata)
+
+    def validate_answer(self, attempt: ExerciseAttempt, answer: dict) -> None:
+        matches = self._answer_matches(answer)
+        if not isinstance(matches, dict):
+            raise InvalidExerciseAnswerError('matching:2 answer must contain a matches object.')
+
+        private_state = attempt.private_state or attempt.grading_payload or {}
+        expected_left_ids = set(private_state.get('left_ids') or private_state.get('correct_matches', {}).keys())
+        expected_right_ids = set(private_state.get('right_ids') or private_state.get('correct_matches', {}).values())
+        submitted_left_ids = set(matches.keys())
+        submitted_right_ids = list(matches.values())
+
+        if submitted_left_ids != expected_left_ids:
+            raise InvalidExerciseAnswerError('matching:2 answer must match every left item exactly once.')
+        if any(not isinstance(left_id, str) or not isinstance(right_id, str) for left_id, right_id in matches.items()):
+            raise InvalidExerciseAnswerError('matching:2 IDs must be strings.')
+        if any(right_id not in expected_right_ids for right_id in submitted_right_ids):
+            raise InvalidExerciseAnswerError('matching:2 answer contains an unknown right item ID.')
+        if len(set(submitted_right_ids)) != len(submitted_right_ids):
+            raise InvalidExerciseAnswerError('matching:2 right item IDs cannot be reused.')
+
+    def grade(self, attempt: ExerciseAttempt, answer: dict) -> GradeResult:
+        self.validate_answer(attempt, answer)
+        matches = self._answer_matches(answer)
+        private_state = attempt.private_state or attempt.grading_payload or {}
+        correct_matches = private_state.get('correct_matches') or {}
+        left_item_sources = private_state.get('left_item_sources') or {}
+
+        item_results = []
+        for left_id in private_state.get('left_ids') or list(correct_matches.keys()):
+            is_correct = matches.get(left_id) == correct_matches.get(left_id)
+            item_results.append(ItemGradeResult(
+                source_item_id=left_item_sources.get(left_id, left_id),
+                is_correct=is_correct,
+                score=1.0 if is_correct else 0.0,
+            ))
+
+        score = (sum(item.score for item in item_results) / len(item_results)) if item_results else 0.0
+        is_fully_correct = bool(item_results) and all(item.is_correct for item in item_results)
+        return GradeResult(
+            score=score,
+            is_fully_correct=is_fully_correct,
+            item_results=tuple(item_results),
+            feedback={
+                'correct_answer': private_state.get('correct_answer', ''),
+                'explanation': '' if is_fully_correct else 'Not all pairs were matched correctly.',
+            },
+        )
+
+    def _answer_matches(self, answer):
+        if isinstance(answer, dict):
+            return answer.get('matches')
+        return None
+
+    def _public_id(self, prefix, used_ids):
+        while True:
+            value = f'{prefix}-{secrets.token_hex(4)}'
+            if value not in used_ids:
+                used_ids.add(value)
+                return value
+
+    def _correct_answer(self, words):
+        return '; '.join(_first_translation(word.translation) for word in words)

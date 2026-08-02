@@ -13,8 +13,10 @@ from learning.exercises.base import ExerciseHandler
 from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
 from learning.exercises.exceptions import InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
 from learning.exercises.handlers.multiple_choice import MultipleChoiceHandler
+from learning.exercises.handlers.matching import MatchingHandler, MatchingHandlerV2
 from learning.exercises.handlers.translation_cn import TranslationCnHandler
 from learning.exercises.handlers.writing import WritingHandler
+from learning.application.handler_versions import ACTIVE_HANDLER_VERSIONS
 from learning.application.rating_policy import FSRSRating, rating_policy_registry
 from learning.application.spaced_repetition import FSRSService, SpacedRepetitionReviewResult
 from learning.application.events import LearningProgressConsumer, build_exercise_submitted_event
@@ -114,6 +116,161 @@ class MultipleChoiceHandlerTests(TestCase):
     def test_validate_config_rejects_invalid_options_count(self):
         with self.assertRaises(InvalidExerciseConfigError):
             MultipleChoiceHandler().validate_config({'options_count': 1})
+
+
+class MatchingHandlerV2Tests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='matching-v2-user', password='pass12345')
+        self.words = [
+            Word.objects.create(
+                hanzi=f'm{index}',
+                pinyin_numeric=f'm{index}',
+                pinyin_graphic=f'm{index}',
+                translation=translation,
+                difficulty=1,
+            )
+            for index, translation in enumerate(['same', 'same', 'third'])
+        ]
+        self.session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        self.cards = [
+            MemoryCard.objects.create(
+                user=self.user,
+                learning_item=word,
+                direction=MemoryCard.DIRECTION_CN_TO_RU,
+                due_at=timezone.now(),
+            )
+            for word in self.words
+        ]
+        self.items = tuple(
+            LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
+            for card in self.cards
+        )
+        self.handler = MatchingHandlerV2()
+
+    def _generated(self):
+        return self.handler.generate(ExerciseGenerationContext(
+            user=self.user,
+            config={},
+            learning_items=self.items,
+        ))
+
+    def _attempt(self, generated=None):
+        generated = generated or self._generated()
+        return ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            exercise_type='matching',
+            kind='matching',
+            handler_version=2,
+            public_payload=generated.public_payload,
+            private_state=generated.private_state,
+            grading_payload=generated.private_state,
+        )
+
+    def _correct_answer(self, attempt):
+        return {'matches': dict(attempt.private_state['correct_matches'])}
+
+    def test_generate_uses_unique_opaque_ids_without_private_state_in_public_payload(self):
+        generated = self._generated()
+        payload = generated.public_payload
+        left_ids = [item['id'] for item in payload['left_items']]
+        right_ids = [item['id'] for item in payload['right_items']]
+
+        self.assertEqual(payload['kind'], 'matching')
+        self.assertEqual(payload['handler_version'], 2)
+        self.assertEqual(len(left_ids), len(set(left_ids)))
+        self.assertEqual(len(right_ids), len(set(right_ids)))
+        self.assertTrue(all(item_id.startswith('left-') for item_id in left_ids))
+        self.assertTrue(all(item_id.startswith('right-') for item_id in right_ids))
+        self.assertNotIn('word_id', payload)
+        self.assertNotIn('pairs', payload)
+        self.assertNotIn('correct_matches', payload)
+        self.assertNotIn('private_state', payload)
+        self.assertFalse(set(left_ids + right_ids) & {str(word.id) for word in self.words})
+        self.assertFalse(set(left_ids + right_ids) & {str(card.id) for card in self.cards})
+        self.assertIn('correct_matches', generated.private_state)
+        same_text_items = [item for item in payload['right_items'] if item['text'] == 'same']
+        self.assertEqual(len(same_text_items), 2)
+        self.assertNotEqual(same_text_items[0]['id'], same_text_items[1]['id'])
+
+    def test_grade_accepts_full_answer_and_returns_item_level_results(self):
+        attempt = self._attempt()
+        grade = self.handler.grade(attempt, self._correct_answer(attempt))
+
+        self.assertTrue(grade.is_fully_correct)
+        self.assertEqual(grade.score, 1.0)
+        self.assertEqual(len(grade.item_results), 3)
+        self.assertEqual(
+            [item.source_item_id for item in grade.item_results],
+            [card.id for card in self.cards],
+        )
+
+    def test_grade_partial_answer_scores_each_item_independently(self):
+        attempt = self._attempt()
+        answer = self._correct_answer(attempt)
+        first_left = attempt.private_state['left_ids'][0]
+        second_right = attempt.private_state['correct_matches'][attempt.private_state['left_ids'][1]]
+        answer['matches'][first_left] = second_right
+
+        grade = self.handler.grade(attempt, answer)
+
+        self.assertFalse(grade.is_fully_correct)
+        self.assertEqual(grade.score, 2 / 3)
+        self.assertEqual([item.is_correct for item in grade.item_results].count(False), 1)
+
+    def test_validate_rejects_unknown_duplicate_incomplete_extra_and_wrong_type_answers(self):
+        attempt = self._attempt()
+        answer = self._correct_answer(attempt)
+        left_ids = attempt.private_state['left_ids']
+        right_ids = list(attempt.private_state['correct_matches'].values())
+
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(attempt, {'translations': ['same', 'same', 'third']})
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(attempt, ['not-an-object'])
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(attempt, {'matches': {**answer['matches'], 'left-unknown': right_ids[0]}})
+        unknown_right = {'matches': dict(answer['matches'])}
+        unknown_right['matches'][left_ids[0]] = 'right-unknown'
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(attempt, unknown_right)
+        duplicate_right = {'matches': dict(answer['matches'])}
+        duplicate_right['matches'][left_ids[1]] = duplicate_right['matches'][left_ids[0]]
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(attempt, duplicate_right)
+        incomplete = {'matches': dict(answer['matches'])}
+        incomplete['matches'].pop(left_ids[0])
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(attempt, incomplete)
+
+    def test_reordering_public_arrays_does_not_change_answer_correctness(self):
+        generated = self._generated()
+        generated.public_payload['left_items'] = list(reversed(generated.public_payload['left_items']))
+        generated.public_payload['right_items'] = list(reversed(generated.public_payload['right_items']))
+        attempt = self._attempt(generated)
+
+        grade = self.handler.grade(attempt, self._correct_answer(attempt))
+
+        self.assertTrue(grade.is_fully_correct)
+
+    def test_v1_and_v2_answer_contracts_are_not_interchangeable(self):
+        v1 = MatchingHandler()
+        v1_generated = v1.generate(ExerciseGenerationContext(user=self.user, config={}, learning_items=self.items[:2]))
+        v1_attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            exercise_type='matching',
+            kind='matching',
+            handler_version=1,
+            private_state=v1_generated.private_state,
+        )
+        v2_attempt = self._attempt()
+
+        v1.validate_answer(v1_attempt, {'translations': [pair['translation'] for pair in v1_attempt.private_state['pairs']]})
+        with self.assertRaises(InvalidExerciseAnswerError):
+            v1.validate_answer(v1_attempt, self._correct_answer(v2_attempt))
+        with self.assertRaises(InvalidExerciseAnswerError):
+            self.handler.validate_answer(v2_attempt, {'translations': ['same', 'same', 'third']})
 
 
 class PracticeSessionAttemptApiTests(APITestCase):
@@ -712,9 +869,13 @@ class PracticeSessionPlanningApiTests(APITestCase):
         session = PracticeSession.objects.get(id=response.data['session_id'])
         matching_attempt = session.attempts.order_by('position').first()
         self.assertEqual(matching_attempt.kind, 'matching')
+        self.assertEqual(matching_attempt.handler_version, 2)
         self.assertGreater(len(matching_attempt.learning_items), 1)
-        self.assertIn('accepted_translations', matching_attempt.private_state)
-        self.assertNotIn('accepted_translations', matching_attempt.public_payload)
+        self.assertIn('correct_matches', matching_attempt.private_state)
+        self.assertNotIn('correct_matches', matching_attempt.public_payload)
+        self.assertIn('left_items', matching_attempt.public_payload)
+        self.assertIn('right_items', matching_attempt.public_payload)
+        self.assertNotIn('pairs', matching_attempt.public_payload)
 
     def test_controlled_randomness_in_type_policy(self):
         items = tuple(
@@ -1437,6 +1598,8 @@ class ExerciseSystemEndToEndTests(APITestCase):
         if attempt.kind in ('translation_ru', 'translation_cn'):
             return {'text': attempt.private_state['correct_answer']}
         if attempt.kind == 'matching':
+            if attempt.handler_version == 2:
+                return {'matches': dict(attempt.private_state['correct_matches'])}
             return {'translations': [pair['translation'] for pair in attempt.private_state['pairs']]}
         if attempt.kind == 'writing':
             return {'completed': True}
@@ -1496,6 +1659,133 @@ class ExerciseSystemEndToEndTests(APITestCase):
             format='json',
         )
         self.assertEqual(denied.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_new_matching_sessions_use_v2_and_submit_with_matches_map(self):
+        cards = [
+            MemoryCard.objects.get_or_create(
+                user=self.user,
+                learning_item=word,
+                direction=MemoryCard.DIRECTION_CN_TO_RU,
+                defaults={'due_at': timezone.now() - timedelta(minutes=5), 'parameter_set_version': 9},
+            )[0]
+            for word in self.words[:3]
+        ]
+
+        response = self.client.post(
+            '/api/practice-sessions/',
+            {
+                'requested_cards_count': 3,
+                'allowed_types': ['matching'],
+                'include_review': True,
+                'include_new': False,
+                'rng_seed': 7,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        payload = response.data['current_exercise']
+        self.assertEqual(payload['kind'], 'matching')
+        self.assertEqual(payload['handler_version'], ACTIVE_HANDLER_VERSIONS['matching'])
+        self.assertEqual(payload['handler_version'], 2)
+        self.assertIn('left_items', payload)
+        self.assertIn('right_items', payload)
+        self.assertNotIn('pairs', payload)
+        self.assertNotIn('correct_matches', payload)
+        self.assertNotIn('private_state', payload)
+
+        session = PracticeSession.objects.get(id=response.data['session_id'])
+        attempt = session.attempts.get()
+        self.assertEqual(attempt.handler_version, 2)
+        self.assertEqual(AttemptMemoryCard.objects.filter(attempt=attempt).count(), 3)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            submit = self.client.post(
+                f'/api/exercise-attempts/{attempt.id}/submit/',
+                {'answer': {'matches': dict(attempt.private_state['correct_matches'])}, 'duration_ms': 1234},
+                format='json',
+            )
+
+        self.assertEqual(submit.status_code, status.HTTP_200_OK)
+        self.assertTrue(submit.data['is_correct'])
+        self.assertEqual(len(submit.data['item_results']), 3)
+        self.assertEqual(MemoryReview.objects.filter(exercise_attempt=attempt).count(), 3)
+        self.assertEqual(
+            sorted(MemoryReview.objects.filter(exercise_attempt=attempt).values_list('memory_card_id', flat=True)),
+            sorted(card.id for card in cards),
+        )
+
+        restored = self.client.get(f'/api/practice-sessions/{session.id}/')
+        self.assertEqual(restored.status_code, status.HTTP_200_OK)
+        self.assertEqual(restored.data['status'], PracticeSession.STATUS_COMPLETED)
+        self.assertIsNone(restored.data['current_exercise'])
+
+        duplicate = self.client.post(
+            f'/api/exercise-attempts/{attempt.id}/submit/',
+            {'answer': {'matches': dict(attempt.private_state['correct_matches'])}, 'duration_ms': 1234},
+            format='json',
+        )
+        self.assertEqual(duplicate.status_code, status.HTTP_200_OK)
+        self.assertEqual(MemoryReview.objects.filter(exercise_attempt=attempt).count(), 3)
+
+    def test_matching_v1_and_v2_attempts_coexist_with_separate_answer_contracts(self):
+        cards = [
+            MemoryCard.objects.get_or_create(
+                user=self.user,
+                learning_item=word,
+                direction=MemoryCard.DIRECTION_CN_TO_RU,
+                defaults={'due_at': timezone.now(), 'parameter_set_version': 9},
+            )[0]
+            for word in self.words[:2]
+        ]
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        items = tuple(
+            LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
+            for card in cards
+        )
+        v1_started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='matching',
+            config={'handler_version': 1},
+            order=0,
+            learning_items=items,
+        )
+        v2_started = StartExerciseUseCase().execute(
+            user=self.user,
+            session=session,
+            kind='matching',
+            config={'handler_version': 2},
+            order=1,
+            learning_items=items,
+        )
+
+        self.assertEqual(v1_started.attempt.handler_version, 1)
+        self.assertEqual(v2_started.attempt.handler_version, 2)
+
+        v1_response = self.client.post(
+            f'/api/exercise-attempts/{v1_started.attempt.id}/submit/',
+            {
+                'answer': {'translations': [pair['translation'] for pair in v1_started.attempt.private_state['pairs']]},
+                'duration_ms': 1000,
+            },
+            format='json',
+        )
+        self.assertEqual(v1_response.status_code, status.HTTP_200_OK)
+
+        v2_legacy_shape = self.client.post(
+            f'/api/exercise-attempts/{v2_started.attempt.id}/submit/',
+            {'answer': {'translations': ['wrong', 'shape']}, 'duration_ms': 1000},
+            format='json',
+        )
+        self.assertEqual(v2_legacy_shape.status_code, status.HTTP_400_BAD_REQUEST)
+
+        v2_response = self.client.post(
+            f'/api/exercise-attempts/{v2_started.attempt.id}/submit/',
+            {'answer': {'matches': dict(v2_started.attempt.private_state['correct_matches'])}, 'duration_ms': 1000},
+            format='json',
+        )
+        self.assertEqual(v2_response.status_code, status.HTTP_200_OK)
 
     def test_consumer_reprocessing_same_event_is_safe(self):
         session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)

@@ -1,5 +1,7 @@
 import random
 
+from learning.application.handler_versions import active_handler_version
+
 
 class ExerciseTypeSelectionPolicy:
     DEFAULT_ALLOWED_TYPES = ('multiple_choice', 'translation_ru', 'translation_cn', 'matching', 'writing')
@@ -12,10 +14,10 @@ class ExerciseTypeSelectionPolicy:
         allowed = tuple(allowed_types or self.DEFAULT_ALLOWED_TYPES)
         candidates = [
             kind for kind in allowed
-            if self.handler_registry.has(kind, 1) and self._is_supported(kind, learning_item, remaining_items_count)
+            if self.handler_registry.has(kind, active_handler_version(kind)) and self._is_supported(kind, learning_item, remaining_items_count)
         ]
         if not candidates:
-            candidates = [kind for kind in self.DEFAULT_ALLOWED_TYPES if self.handler_registry.has(kind, 1)]
+            candidates = [kind for kind in self.DEFAULT_ALLOWED_TYPES if self.handler_registry.has(kind, active_handler_version(kind))]
 
         weights = [self._weight(kind, learning_item, recent_types, remaining_items_count) for kind in candidates]
         return self.rng.choices(candidates, weights=weights, k=1)[0]

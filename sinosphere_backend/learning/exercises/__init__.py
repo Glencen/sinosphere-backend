@@ -1,5 +1,5 @@
 from .registry import registry
-from .handlers.matching import MatchingHandler
+from .handlers.matching import MatchingHandler, MatchingHandlerV2
 from .handlers.multiple_choice import MultipleChoiceHandler
 from .handlers.translation_ru import TranslationRuHandler
 from .handlers.translation_cn import TranslationCnHandler
@@ -9,6 +9,7 @@ registry.register(MultipleChoiceHandler())
 registry.register(TranslationRuHandler())
 registry.register(TranslationCnHandler())
 registry.register(MatchingHandler())
+registry.register(MatchingHandlerV2())
 registry.register(WritingHandler())
 
 __all__ = ['registry']
