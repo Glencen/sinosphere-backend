@@ -1,13 +1,14 @@
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from dictionary.models import Word
 from dictionary.serializers import WordSerializer
+from learning.models import MemoryCard, MemoryReview
 from users.models import UserProfile, UserWord
 from users.serializers import UserWordListSerializer, UserWordSerializer
 
@@ -15,13 +16,13 @@ from users.serializers import UserWordListSerializer, UserWordSerializer
 User = get_user_model()
 
 
-class WordContractSerializerTests(TestCase):
+class WordContractSerializerTests(APITestCase):
     def test_word_serializer_exposes_pinyin_aliases(self):
         word = Word.objects.create(
             hanzi='你',
             pinyin_numeric='ni3',
             pinyin_graphic='nǐ',
-            translation='you',
+            translation='ты; вы',
             difficulty=1,
         )
 
@@ -32,16 +33,16 @@ class WordContractSerializerTests(TestCase):
         self.assertEqual(data['pinyin_graphic'], 'nǐ')
         self.assertEqual(data['pinyin_numeric'], 'ni3')
 
-    def test_user_word_serializers_use_same_nested_word_contract(self):
+    def test_user_word_serializers_are_dictionary_membership_only(self):
         user = User.objects.create_user(username='alice', password='pass12345')
         word = Word.objects.create(
             hanzi='好',
             pinyin_numeric='hao3',
             pinyin_graphic='hǎo',
-            translation='good; well',
+            translation='хороший; хорошо',
             difficulty=1,
         )
-        user_word = UserWord.objects.create(user=user, word=word)
+        user_word = UserWord.objects.create(user=user, word=word, notes='saved')
 
         create_data = UserWordSerializer(user_word).data
         list_data = UserWordListSerializer(user_word).data
@@ -50,8 +51,13 @@ class WordContractSerializerTests(TestCase):
             self.assertIsInstance(data['word'], dict)
             self.assertEqual(data['word']['hanzi'], '好')
             self.assertEqual(data['word']['pinyin'], 'hǎo')
+            self.assertEqual(data['notes'], 'saved')
             self.assertNotIn('word_info', data)
             self.assertNotIn('word_detail', data)
+            self.assertNotIn('due', data)
+            self.assertNotIn('state', data)
+            self.assertNotIn('review_urgency', data)
+            self.assertNotIn('fsrs_state', data)
 
 
 class UserDictionaryApiContractTests(APITestCase):
@@ -62,20 +68,26 @@ class UserDictionaryApiContractTests(APITestCase):
             hanzi='学',
             pinyin_numeric='xue2',
             pinyin_graphic='xué',
-            translation='study; learn',
+            translation='учиться; изучать',
             difficulty=1,
         )
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def test_add_word_returns_unified_word_objects(self):
-        response = self.client.post('/api/me/dictionary/', {'word_id': self.word.id}, format='json')
+    def test_add_word_returns_dictionary_membership(self):
+        response = self.client.post(
+            '/api/me/dictionary/',
+            {'word_id': self.word.id, 'notes': 'important'},
+            format='json',
+        )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['word']['hanzi'], '学')
-        self.assertEqual(response.data['word']['pinyin'], 'xué')
+        self.assertEqual(response.data['notes'], 'important')
         self.assertNotIn('word_info', response.data)
         self.assertNotIn('word_detail', response.data)
+        self.assertNotIn('due', response.data)
+        self.assertFalse(MemoryCard.objects.filter(user=self.user, learning_item=self.word).exists())
 
     def test_add_word_rejects_duplicates(self):
         UserWord.objects.create(user=self.user, word=self.word)
@@ -94,12 +106,13 @@ class UserDictionaryApiContractTests(APITestCase):
         self.assertIn('word_id', missing_response.data)
         self.assertIn('word_id', unknown_response.data)
 
-    def test_dictionary_list_and_review_payloads_are_consistent(self):
-        due_word = UserWord.objects.create(
+    def test_dictionary_list_is_membership_only_and_review_queue_uses_memory_cards(self):
+        user_word = UserWord.objects.create(user=self.user, word=self.word, notes='saved')
+        card = MemoryCard.objects.create(
             user=self.user,
-            word=self.word,
-            due=timezone.now() - timedelta(minutes=1),
-            state=1,
+            learning_item=self.word,
+            direction=MemoryCard.DIRECTION_CN_TO_RU,
+            due_at=timezone.now() - timedelta(minutes=1),
         )
 
         dictionary_response = self.client.get('/api/me/dictionary/')
@@ -109,26 +122,91 @@ class UserDictionaryApiContractTests(APITestCase):
         self.assertEqual(review_response.status_code, status.HTTP_200_OK)
 
         entry = dictionary_response.data[0]
-        self.assertEqual(entry['id'], due_word.id)
+        self.assertEqual(entry['id'], user_word.id)
         self.assertEqual(entry['word']['hanzi'], '学')
-        self.assertNotIn('word_info', entry)
-        self.assertIn('next_review', entry)
-        self.assertIn('due', entry)
+        self.assertEqual(entry['notes'], 'saved')
+        self.assertNotIn('next_review', entry)
+        self.assertNotIn('due', entry)
 
         review_entry = review_response.data['words_for_review'][0]
+        self.assertEqual(review_entry['id'], card.id)
         self.assertEqual(review_entry['word']['hanzi'], '学')
-        self.assertNotIn('word_info', review_entry)
+        self.assertEqual(review_entry['direction'], MemoryCard.DIRECTION_CN_TO_RU)
+        self.assertIn('next_review', review_entry)
+        self.assertNotIn('fsrs_state', review_entry)
         self.assertEqual(review_response.data['total_for_review'], 1)
 
+    def test_review_logs_are_memory_reviews_without_private_state(self):
+        card = MemoryCard.objects.create(
+            user=self.user,
+            learning_item=self.word,
+            direction=MemoryCard.DIRECTION_CN_TO_RU,
+            due_at=timezone.now(),
+        )
+        MemoryReview.objects.create(
+            memory_card=card,
+            rating=3,
+            reviewed_at=timezone.now(),
+            duration_ms=1200,
+            previous_state={'hidden': True},
+            resulting_state={'hidden': True},
+            fsrs_log={'hidden': True},
+            scheduler_version='fsrs-py',
+            parameter_set_version=1,
+        )
 
-    def test_legacy_user_dictionary_routes_are_removed(self):
-        dictionary_response = self.client.get('/api/dictionary/')
-        review_response = self.client.get('/api/words-for-review/')
-        check_response = self.client.get(f'/api/check-word/{self.word.id}/')
+        response = self.client.get('/api/me/review/logs/')
 
-        self.assertEqual(dictionary_response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(review_response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(check_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['card']['word']['hanzi'], '学')
+        self.assertNotIn('previous_state', response.data[0])
+        self.assertNotIn('resulting_state', response.data[0])
+        self.assertNotIn('fsrs_log', response.data[0])
+
+    def test_review_queue_query_count_is_bounded(self):
+        for index in range(20):
+            word = Word.objects.create(
+                hanzi=f'词{index}',
+                pinyin_numeric=f'ci2-{index}',
+                pinyin_graphic=f'cí-{index}',
+                translation=f'слово-{index}',
+                difficulty=1,
+            )
+            card = MemoryCard.objects.create(
+                user=self.user,
+                learning_item=word,
+                direction=MemoryCard.DIRECTION_CN_TO_RU,
+                due_at=timezone.now() - timedelta(minutes=index + 1),
+            )
+            MemoryReview.objects.create(
+                memory_card=card,
+                rating=3,
+                reviewed_at=timezone.now() - timedelta(days=1),
+                duration_ms=1000,
+                scheduler_version='fsrs-py',
+                parameter_set_version=1,
+            )
+
+        with self.assertNumQueries(6):
+            response = self.client.get('/api/me/review/words/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['total_for_review'], 20)
+
+    def test_removed_user_review_routes_return_404(self):
+        responses = [
+            self.client.get('/api/dictionary/'),
+            self.client.get('/api/words-for-review/'),
+            self.client.get(f'/api/check-word/{self.word.id}/'),
+            self.client.post('/api/me/dictionary/1/review/', {}),
+            self.client.post('/api/me/optimize-fsrs/', {}),
+            self.client.post('/api/me/words/1/reset/', {}),
+        ]
+
+        for response in responses:
+            self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_dictionary_requires_authentication(self):
         self.client.force_authenticate(user=None)
 
