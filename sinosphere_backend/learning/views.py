@@ -26,7 +26,8 @@ from .fsrs_optimizer import FSRSOptimizer
 from .application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
 from .application.sessions import (
     GetCurrentExerciseUseCase, GetPracticeSessionUseCase,
-    StartPracticeSessionUseCase, public_attempt_payload, session_dto, session_progress
+    GetPracticeSessionSummaryUseCase, StartPracticeSessionUseCase,
+    public_attempt_payload, session_dto, session_progress
 )
 from .exercises import registry as exercise_handler_registry
 from .exercises.exceptions import ExerciseAttemptAccessDeniedError, ExerciseAttemptExpiredError, InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
@@ -1228,6 +1229,18 @@ class PracticeSessionCurrentExerciseView(APIView):
             'current_exercise': public_attempt_payload(attempt),
             'progress': session_progress(session),
         })
+
+
+class PracticeSessionSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        try:
+            summary = GetPracticeSessionSummaryUseCase().execute(user=request.user, session_id=session_id)
+        except PracticeSession.DoesNotExist:
+            return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(summary)
 
 
 class ExerciseAttemptSubmitView(APIView):

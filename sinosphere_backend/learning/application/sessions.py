@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Avg, Count, Min, Q
 from django.utils import timezone
 
-from learning.models import ExerciseAttempt, PracticeSession
+from learning.models import AttemptMemoryCard, ExerciseAttempt, PracticeSession
 from learning.exercises.registry import registry
 from learning.application.composer import ExerciseComposer
 from learning.application.planner import PracticeSessionPlanner
@@ -125,6 +126,14 @@ class GetCurrentExerciseUseCase:
         return session, attempt
 
 
+class GetPracticeSessionSummaryUseCase:
+    def execute(self, *, user, session_id):
+        session = PracticeSession.objects.prefetch_related('attempts').get(id=session_id, user=user)
+        if session.is_expired:
+            session.mark_expired()
+        return session_summary(session)
+
+
 def session_progress(session):
     total = session.generated_exercises_count or session.attempts.count()
     completed = session.attempts.filter(is_correct__isnull=False).count()
@@ -134,6 +143,73 @@ def session_progress(session):
         'learning_items_count': session.requested_cards_count,
         'remaining_exercises_count': max(total - completed, 0),
         'percentage': round((completed / total) * 100, 1) if total else 100,
+    }
+
+
+def session_summary(session):
+    attempts = list(session.attempts.all())
+    submitted_attempts = [attempt for attempt in attempts if attempt.is_correct is not None]
+    attempts_summary = session.attempts.aggregate(
+        visual_exercises_count=Count('id'),
+        completed_exercises_count=Count('id', filter=Q(is_correct__isnull=False)),
+        correct_exercises_count=Count('id', filter=Q(is_correct=True)),
+        incorrect_exercises_count=Count('id', filter=Q(is_correct=False)),
+        average_score=Avg('score', filter=Q(is_correct__isnull=False)),
+    )
+    item_total = 0
+    item_correct = 0
+    for attempt in submitted_attempts:
+        result = attempt.result or {}
+        item_results = result.get('item_results') or []
+        item_total += len(item_results)
+        item_correct += sum(1 for item in item_results if item.get('is_correct') is True)
+
+    link_summary = AttemptMemoryCard.objects.filter(
+        attempt__session=session,
+        attempt__is_correct__isnull=False,
+    ).aggregate(
+        again=Count('id', filter=Q(fsrs_rating=1)),
+        hard=Count('id', filter=Q(fsrs_rating=2)),
+        good=Count('id', filter=Q(fsrs_rating=3)),
+        easy=Count('id', filter=Q(fsrs_rating=4)),
+        next_review_at=Min('memory_card__due_at'),
+    )
+    review_counts = {
+        'again': link_summary['again'] or 0,
+        'hard': link_summary['hard'] or 0,
+        'good': link_summary['good'] or 0,
+        'easy': link_summary['easy'] or 0,
+    }
+    next_review_at = link_summary['next_review_at']
+
+    started_at = session.started_at
+    completed_at = session.completed_at
+    last_submitted_at = max((attempt.submitted_at for attempt in submitted_attempts if attempt.submitted_at), default=None)
+    summary_end = completed_at or last_submitted_at
+    duration_ms = None
+    if started_at and summary_end:
+        duration_ms = max(0, int((summary_end - started_at).total_seconds() * 1000))
+
+    average_score = attempts_summary['average_score']
+    return {
+        'session_id': session.id,
+        'status': session.status,
+        'started_at': started_at,
+        'completed_at': completed_at,
+        'duration_ms': duration_ms,
+        'learning_items_count': session.requested_cards_count,
+        'visual_exercises_count': attempts_summary['visual_exercises_count'] or 0,
+        'completed_exercises_count': attempts_summary['completed_exercises_count'] or 0,
+        'correct_exercises_count': attempts_summary['correct_exercises_count'] or 0,
+        'incorrect_exercises_count': attempts_summary['incorrect_exercises_count'] or 0,
+        'average_score': round(float(average_score), 4) if average_score is not None else None,
+        'item_results': {
+            'total': item_total,
+            'correct': item_correct,
+            'incorrect': max(item_total - item_correct, 0),
+        },
+        'reviews': review_counts,
+        'next_review_at': next_review_at,
     }
 
 

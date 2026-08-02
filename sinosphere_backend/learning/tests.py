@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -8,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from dictionary.models import Word
+from learning.application.sessions import GetPracticeSessionSummaryUseCase
 from learning.application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
 from learning.exercises.base import ExerciseHandler
 from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
@@ -1564,6 +1566,170 @@ class RemainingExerciseHandlersTests(TestCase):
 
         with self.assertRaises(InvalidExerciseAnswerError):
             handler.validate_answer(attempt, {'text': 'зЊ«', 'completed': True})
+
+
+class PracticeSessionSummaryApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='summary-user', password='pass12345')
+        self.other_user = User.objects.create_user(username='summary-other', password='pass12345')
+        UserProfile.objects.get_or_create(user=self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.words = [
+            Word.objects.create(
+                hanzi=f's{index}',
+                pinyin_numeric=f's{index}',
+                pinyin_graphic=f's{index}',
+                translation=f'summary-{index}',
+                difficulty=1,
+            )
+            for index in range(4)
+        ]
+        self.cards = [
+            MemoryCard.objects.create(
+                user=self.user,
+                learning_item=word,
+                direction=MemoryCard.DIRECTION_CN_TO_RU,
+                due_at=timezone.now() + timedelta(days=index + 1),
+            )
+            for index, word in enumerate(self.words)
+        ]
+
+    def _session(self, *, status=PracticeSession.STATUS_COMPLETED, requested_cards_count=4):
+        return PracticeSession.objects.create(
+            user=self.user,
+            status=status,
+            requested_cards_count=requested_cards_count,
+            requested_count=requested_cards_count,
+            generated_exercises_count=3,
+            completed_at=timezone.now() if status == PracticeSession.STATUS_COMPLETED else None,
+        )
+
+    def _attempt(self, session, *, order, is_correct, score, item_results):
+        attempt = ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=self.words[min(order, len(self.words) - 1)],
+            exercise_type='matching' if len(item_results) > 1 else 'translation_ru',
+            kind='matching' if len(item_results) > 1 else 'translation_ru',
+            handler_version=2 if len(item_results) > 1 else 1,
+            order=order,
+            position=order,
+            is_correct=is_correct,
+            score=Decimal(str(score)),
+            status=ExerciseAttempt.STATUS_SUBMITTED if is_correct is not None else ExerciseAttempt.STATUS_PENDING,
+            submitted_at=timezone.now() if is_correct is not None else None,
+            result={
+                'score': score,
+                'is_fully_correct': is_correct,
+                'item_results': item_results,
+                'feedback': {},
+            } if is_correct is not None else {},
+        )
+        for index, item in enumerate(item_results):
+            card = MemoryCard.objects.get(id=item['source_item_id'])
+            AttemptMemoryCard.objects.create(
+                attempt=attempt,
+                memory_card=card,
+                position=index,
+                is_correct=item['is_correct'],
+                score=Decimal(str(item['score'])),
+                fsrs_rating=3 if item['is_correct'] else 1,
+            )
+        return attempt
+
+    def test_summary_completed_session(self):
+        session = self._session(requested_cards_count=4)
+        self._attempt(session, order=0, is_correct=True, score=1, item_results=[
+            {'source_item_id': self.cards[0].id, 'is_correct': True, 'score': 1.0},
+        ])
+        self._attempt(session, order=1, is_correct=False, score=0.5, item_results=[
+            {'source_item_id': self.cards[1].id, 'is_correct': True, 'score': 1.0},
+            {'source_item_id': self.cards[2].id, 'is_correct': False, 'score': 0.0},
+        ])
+        self._attempt(session, order=2, is_correct=True, score=1, item_results=[
+            {'source_item_id': self.cards[3].id, 'is_correct': True, 'score': 1.0},
+        ])
+
+        response = self.client.get(f'/api/practice-sessions/{session.id}/summary/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['session_id'], session.id)
+        self.assertEqual(response.data['status'], PracticeSession.STATUS_COMPLETED)
+        self.assertEqual(response.data['learning_items_count'], 4)
+        self.assertEqual(response.data['visual_exercises_count'], 3)
+        self.assertEqual(response.data['completed_exercises_count'], 3)
+        self.assertEqual(response.data['correct_exercises_count'], 2)
+        self.assertEqual(response.data['incorrect_exercises_count'], 1)
+        self.assertEqual(response.data['average_score'], 0.8333)
+        self.assertEqual(response.data['item_results'], {'total': 4, 'correct': 3, 'incorrect': 1})
+        self.assertEqual(response.data['reviews']['good'], 3)
+        self.assertEqual(response.data['reviews']['again'], 1)
+        self.assertIn('next_review_at', response.data)
+        self.assertNotIn('xp_earned', response.data)
+        self.assertNotIn('fsrs_state', response.data)
+
+    def test_summary_in_progress_session_returns_partial_state(self):
+        session = self._session(status=PracticeSession.STATUS_IN_PROGRESS, requested_cards_count=4)
+        self._attempt(session, order=0, is_correct=True, score=1, item_results=[
+            {'source_item_id': self.cards[0].id, 'is_correct': True, 'score': 1.0},
+        ])
+        ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            exercise_type='translation_ru',
+            kind='translation_ru',
+            handler_version=1,
+            order=1,
+            position=1,
+            status=ExerciseAttempt.STATUS_PENDING,
+        )
+
+        response = self.client.get(f'/api/practice-sessions/{session.id}/summary/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], PracticeSession.STATUS_IN_PROGRESS)
+        self.assertEqual(response.data['visual_exercises_count'], 2)
+        self.assertEqual(response.data['completed_exercises_count'], 1)
+        self.assertEqual(response.data['correct_exercises_count'], 1)
+        self.assertEqual(response.data['item_results'], {'total': 1, 'correct': 1, 'incorrect': 0})
+
+    def test_summary_access_denied_and_not_found(self):
+        other_session = PracticeSession.objects.create(user=self.other_user, status=PracticeSession.STATUS_COMPLETED)
+
+        missing_response = self.client.get('/api/practice-sessions/999999/summary/')
+        denied_response = self.client.get(f'/api/practice-sessions/{other_session.id}/summary/')
+
+        self.assertEqual(missing_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(denied_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_summary_empty_session(self):
+        session = PracticeSession.objects.create(
+            user=self.user,
+            status=PracticeSession.STATUS_COMPLETED,
+            requested_cards_count=0,
+            requested_count=0,
+            generated_exercises_count=0,
+            completed_at=timezone.now(),
+        )
+
+        response = self.client.get(f'/api/practice-sessions/{session.id}/summary/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['visual_exercises_count'], 0)
+        self.assertEqual(response.data['completed_exercises_count'], 0)
+        self.assertIsNone(response.data['average_score'])
+        self.assertEqual(response.data['item_results'], {'total': 0, 'correct': 0, 'incorrect': 0})
+
+    def test_summary_query_count_does_not_grow_with_attempts(self):
+        session = self._session(requested_cards_count=4)
+        for index, card in enumerate(self.cards):
+            self._attempt(session, order=index, is_correct=True, score=1, item_results=[
+                {'source_item_id': card.id, 'is_correct': True, 'score': 1.0},
+            ])
+
+        with self.assertNumQueries(4):
+            GetPracticeSessionSummaryUseCase().execute(user=self.user, session_id=session.id)
 
 
 class ExerciseSystemEndToEndTests(APITestCase):
