@@ -300,20 +300,23 @@ class SubmitExerciseView(APIView):
         kind = attempt.kind or attempt.exercise_type
         handler_version = attempt.handler_version if attempt.handler_version is not None else 1
         if exercise_handler_registry.has(kind, handler_version):
-            return self._submit_attempt_with_handler(user, data)
+            return self._submit_attempt_with_handler(user, data, attempt=attempt)
 
         return self._submit_attempt_legacy(user, data)
 
-    def _submit_attempt_with_handler(self, user, data):
+    def _submit_attempt_with_handler(self, user, data, *, attempt):
         response_time = data.get('time_spent', 0)
         duration_ms = int(response_time * 1000) if response_time is not None else None
+        answer = data['answer']
+        if (attempt.kind or attempt.exercise_type) == 'writing' and not isinstance(answer, dict):
+            answer = {'completed': True}
         use_case = SubmitExerciseAnswerUseCase()
 
         try:
             result = use_case.execute(
                 user=user,
                 attempt_id=data['attempt_id'],
-                answer=data['answer'],
+                answer=answer,
                 duration_ms=duration_ms,
             )
         except ExerciseAttempt.DoesNotExist:
