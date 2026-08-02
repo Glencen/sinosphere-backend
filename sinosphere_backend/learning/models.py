@@ -221,14 +221,38 @@ class PracticeSession(models.Model):
         return f"{self.user.username}: {self.session_type} ({self.status})"
 
     def update_status_from_attempts(self):
-        if self.status != self.STATUS_ACTIVE:
+        if self.status in [self.STATUS_COMPLETED, self.STATUS_ABANDONED, self.STATUS_EXPIRED]:
             return
 
         has_pending = self.attempts.filter(is_correct__isnull=True).exists()
         if not has_pending:
-            self.status = self.STATUS_COMPLETED
-            self.completed_at = timezone.now()
-            self.save(update_fields=['status', 'completed_at'])
+            self.mark_completed()
+        elif self.status in [self.STATUS_CREATED, self.STATUS_ACTIVE]:
+            self.status = self.STATUS_IN_PROGRESS
+            self.save(update_fields=['status'])
+
+    def mark_completed(self):
+        if self.status == self.STATUS_COMPLETED:
+            return
+        self.status = self.STATUS_COMPLETED
+        self.completed_at = self.completed_at or timezone.now()
+        self.save(update_fields=['status', 'completed_at'])
+
+    def mark_expired(self):
+        if self.status in [self.STATUS_COMPLETED, self.STATUS_EXPIRED]:
+            return
+        self.status = self.STATUS_EXPIRED
+        self.save(update_fields=['status'])
+
+    def mark_abandoned(self):
+        if self.status in [self.STATUS_COMPLETED, self.STATUS_EXPIRED, self.STATUS_ABANDONED]:
+            return
+        self.status = self.STATUS_ABANDONED
+        self.save(update_fields=['status'])
+
+    @property
+    def is_expired(self):
+        return bool(self.expires_at and self.expires_at <= timezone.now())
 
 
 class ExerciseAttempt(models.Model):
