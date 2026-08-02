@@ -79,6 +79,12 @@ class MemoryReview(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['memory_card', 'exercise_attempt'],
+                name='unique_memory_review_card_attempt'
+            )
+        ]
         indexes = [
             models.Index(fields=['memory_card', 'reviewed_at'], name='idx_memory_review_card_time'),
             models.Index(fields=['exercise_attempt'], name='idx_memory_review_attempt'),
