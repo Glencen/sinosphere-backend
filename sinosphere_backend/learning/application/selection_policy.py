@@ -2,7 +2,7 @@ import random
 
 
 class ExerciseTypeSelectionPolicy:
-    DEFAULT_ALLOWED_TYPES = ('multiple_choice', 'translation_ru', 'matching')
+    DEFAULT_ALLOWED_TYPES = ('multiple_choice', 'translation_ru', 'translation_cn', 'matching', 'writing')
 
     def __init__(self, *, handler_registry, rng=None):
         self.handler_registry = handler_registry
@@ -25,6 +25,8 @@ class ExerciseTypeSelectionPolicy:
             'multiple_choice': lambda: learning_item.item_type in ('word', 'memory_card'),
             'translation_ru': lambda: learning_item.item_type in ('word', 'memory_card'),
             'matching': lambda: learning_item.item_type in ('word', 'memory_card') and remaining_items_count >= 2,
+            'translation_cn': lambda: learning_item.item_type in ('word', 'memory_card'),
+            'writing': lambda: learning_item.item_type in ('word', 'memory_card'),
         }
         return requirements.get(kind, lambda: False)()
 
@@ -33,6 +35,8 @@ class ExerciseTypeSelectionPolicy:
             'multiple_choice': 3,
             'translation_ru': 3,
             'matching': 2 if remaining_items_count >= 2 else 0,
+            'translation_cn': 2,
+            'writing': 1,
         }.get(kind, 1)
         recent_penalty = recent_types.count(kind)
         difficulty = learning_item.payload.get('difficulty') or 1
