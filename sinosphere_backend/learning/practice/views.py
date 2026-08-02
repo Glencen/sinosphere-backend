@@ -5,17 +5,17 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from learning.application.sessions import (
-    GetCurrentExerciseUseCase,
-    GetPracticeSessionSummaryUseCase,
-    GetPracticeSessionUseCase,
-    StartPracticeSessionUseCase,
+from learning.practice.session_service import (
+    CurrentExerciseService,
+    PracticeSessionSummaryService,
+    PracticeSessionQueryService,
+    PracticeSessionCreationService,
     exercise_attempt_result_dto,
     public_attempt_payload,
     session_dto,
     session_progress,
 )
-from learning.application.use_cases import SubmitExerciseAnswerUseCase
+from learning.practice.attempt_service import ExerciseSubmissionService
 from learning.exercises.exceptions import (
     ExerciseAttemptAccessDeniedError,
     ExerciseAttemptExpiredError,
@@ -40,7 +40,7 @@ class PracticeSessionCreateView(APIView):
         rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
 
         try:
-            result = StartPracticeSessionUseCase(rng=rng).execute(user=request.user, config=config)
+            result = PracticeSessionCreationService(rng=rng).execute(user=request.user, config=config)
         except (InvalidExerciseConfigError, UnknownExerciseHandlerError) as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -52,7 +52,7 @@ class PracticeSessionApiDetailView(APIView):
 
     def get(self, request, session_id):
         try:
-            session = GetPracticeSessionUseCase().execute(user=request.user, session_id=session_id)
+            session = PracticeSessionQueryService().execute(user=request.user, session_id=session_id)
         except PracticeSession.DoesNotExist:
             return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -64,7 +64,7 @@ class PracticeSessionCurrentExerciseView(APIView):
 
     def get(self, request, session_id):
         try:
-            session, attempt = GetCurrentExerciseUseCase().execute(user=request.user, session_id=session_id)
+            session, attempt = CurrentExerciseService().execute(user=request.user, session_id=session_id)
         except PracticeSession.DoesNotExist:
             return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -81,7 +81,7 @@ class PracticeSessionSummaryView(APIView):
 
     def get(self, request, session_id):
         try:
-            summary = GetPracticeSessionSummaryUseCase().execute(user=request.user, session_id=session_id)
+            summary = PracticeSessionSummaryService().execute(user=request.user, session_id=session_id)
         except PracticeSession.DoesNotExist:
             return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -98,7 +98,7 @@ class ExerciseAttemptSubmitView(APIView):
 
         data = serializer.validated_data
         try:
-            result = SubmitExerciseAnswerUseCase().execute(
+            result = ExerciseSubmissionService().execute(
                 user=request.user,
                 attempt_id=attempt_id,
                 answer=data['answer'],

@@ -1,6 +1,6 @@
 import logging
 
-from .base import ExerciseHandler
+from .exercise_handler import ExerciseHandler
 from .exceptions import UnknownExerciseHandlerError
 
 

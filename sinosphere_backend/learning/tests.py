@@ -12,19 +12,19 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from dictionary.models import Word
-from learning.application.sessions import GetPracticeSessionSummaryUseCase
-from learning.application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
-from learning.exercises.base import ExerciseHandler
+from learning.practice.session_service import PracticeSessionSummaryService
+from learning.practice.attempt_service import ExerciseAttemptCreationService, ExerciseSubmissionService
+from learning.exercises.exercise_handler import ExerciseHandler
 from learning.exercises.dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult, LearningItemRef
 from learning.exercises.exceptions import InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
 from learning.exercises.handlers.multiple_choice import MultipleChoiceHandler
 from learning.exercises.handlers.matching import MatchingHandler, MatchingHandlerV2
 from learning.exercises.handlers.translation_cn import TranslationCnHandler
 from learning.exercises.handlers.writing import WritingHandler
-from learning.application.handler_versions import ACTIVE_HANDLER_VERSIONS
-from learning.application.rating_policy import FSRSRating, rating_policy_registry
-from learning.application.spaced_repetition import FSRSService, SpacedRepetitionReviewResult
-from learning.application.events import LearningProgressConsumer, build_exercise_submitted_event
+from learning.practice.handler_versions import ACTIVE_HANDLER_VERSIONS
+from learning.practice.rating_policy import FSRSRating, rating_policy_registry
+from learning.practice.spaced_repetition import FSRSService, SpacedRepetitionReviewResult
+from learning.practice.events import LearningProgressConsumer, build_exercise_submitted_event
 from learning.exercises.registry import ExerciseHandlerRegistry
 from learning.models import AttemptMemoryCard, ExerciseEventConsumerReceipt, FSRSSchedulerProfile, MemoryCard, MemoryReview, ExerciseAttempt, PracticeSession
 from users.models import UserExerciseHistory, UserLearningStats, UserProfile, UserWord
@@ -307,10 +307,10 @@ class PracticeSessionAttemptApiTests(APITestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def test_start_exercise_use_case_persists_attempt_without_exposing_private_state(self):
+    def test_attempt_creation_service_persists_attempt_without_exposing_private_state(self):
         session = PracticeSession.objects.create(user=self.user)
 
-        result = StartExerciseUseCase().execute(
+        result = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='multiple_choice',
@@ -471,8 +471,8 @@ class PracticeSessionAttemptApiTests(APITestCase):
         self.assertTrue(response.data['is_correct'])
         self.assertEqual(MemoryReview.objects.filter(exercise_attempt=attempt).count(), 2)
 from django.db import IntegrityError
-from learning.application.composer import ExerciseComposer
-from learning.application.selection_policy import ExerciseTypeSelectionPolicy
+from learning.practice.composer import ExerciseComposer
+from learning.practice.selection_policy import ExerciseTypeSelectionPolicy
 from learning.exercises import registry as exercise_registry
 
 
@@ -1060,7 +1060,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
     def test_submit_updates_one_memory_card_and_creates_review(self):
         card = self._card(self.words[0])
         session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
-        started = StartExerciseUseCase().execute(
+        started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='multiple_choice',
@@ -1071,7 +1071,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         correct_index = started.attempt.private_state['correct_index']
         service = FakeSpacedRepetitionService()
 
-        result = SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+        result = ExerciseSubmissionService(spaced_repetition_service=service).execute(
             user=self.user,
             attempt_id=started.attempt.id,
             answer={'selected_index': correct_index},
@@ -1094,7 +1094,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
             LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
             for card in cards
         )
-        started = StartExerciseUseCase().execute(
+        started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='matching',
@@ -1106,7 +1106,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         translations[1] = 'wrong-answer'
         service = FakeSpacedRepetitionService()
 
-        SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+        ExerciseSubmissionService(spaced_repetition_service=service).execute(
             user=self.user,
             attempt_id=started.attempt.id,
             answer={'translations': translations},
@@ -1125,7 +1125,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
             LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
             for card in cards
         )
-        started = StartExerciseUseCase().execute(
+        started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='matching',
@@ -1137,7 +1137,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         service = FakeSpacedRepetitionService(fail_on_card_id=cards[1].id)
 
         with self.assertRaises(RuntimeError):
-            SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+            ExerciseSubmissionService(spaced_repetition_service=service).execute(
                 user=self.user,
                 attempt_id=started.attempt.id,
                 answer={'translations': translations},
@@ -1152,7 +1152,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
     def test_idempotent_resubmit_does_not_create_second_review(self):
         card = self._card(self.words[0])
         session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
-        started = StartExerciseUseCase().execute(
+        started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='multiple_choice',
@@ -1162,11 +1162,11 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         )
         answer = {'selected_index': started.attempt.private_state['correct_index']}
         service = FakeSpacedRepetitionService()
-        use_case = SubmitExerciseAnswerUseCase(spaced_repetition_service=service)
+        submission_service = ExerciseSubmissionService(spaced_repetition_service=service)
 
-        use_case.execute(user=self.user, attempt_id=started.attempt.id, answer=answer, duration_ms=1000)
+        submission_service.execute(user=self.user, attempt_id=started.attempt.id, answer=answer, duration_ms=1000)
         due_after_first = MemoryCard.objects.get(id=card.id).due_at
-        use_case.execute(user=self.user, attempt_id=started.attempt.id, answer=answer, duration_ms=1000)
+        submission_service.execute(user=self.user, attempt_id=started.attempt.id, answer=answer, duration_ms=1000)
 
         self.assertEqual(MemoryReview.objects.filter(memory_card=card, exercise_attempt=started.attempt).count(), 1)
         self.assertEqual(MemoryCard.objects.get(id=card.id).due_at, due_after_first)
@@ -1180,7 +1180,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
             LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
             for card in reversed_cards
         )
-        started = StartExerciseUseCase().execute(
+        started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='matching',
@@ -1191,7 +1191,7 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         translations = [pair['translation'] for pair in started.attempt.private_state['pairs']]
         service = FakeSpacedRepetitionService()
 
-        SubmitExerciseAnswerUseCase(spaced_repetition_service=service).execute(
+        ExerciseSubmissionService(spaced_repetition_service=service).execute(
             user=self.user,
             attempt_id=started.attempt.id,
             answer={'translations': translations},
@@ -1543,7 +1543,7 @@ class PracticeSessionSummaryApiTests(APITestCase):
             ])
 
         with self.assertNumQueries(4):
-            GetPracticeSessionSummaryUseCase().execute(user=self.user, session_id=session.id)
+            PracticeSessionSummaryService().execute(user=self.user, session_id=session.id)
 
 
 class ExerciseAttemptResultApiTests(APITestCase):
@@ -1815,7 +1815,7 @@ class ExerciseSystemEndToEndTests(APITestCase):
             LearningItemRef('memory_card', card.id, {'word_id': card.learning_item_id, 'difficulty': 1})
             for card in cards
         )
-        v1_started = StartExerciseUseCase().execute(
+        v1_started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='matching',
@@ -1823,7 +1823,7 @@ class ExerciseSystemEndToEndTests(APITestCase):
             order=0,
             learning_items=items,
         )
-        v2_started = StartExerciseUseCase().execute(
+        v2_started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='matching',
@@ -1861,7 +1861,7 @@ class ExerciseSystemEndToEndTests(APITestCase):
 
     def test_consumer_reprocessing_same_event_is_safe(self):
         session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
-        started = StartExerciseUseCase().execute(
+        started = ExerciseAttemptCreationService().execute(
             user=self.user,
             session=session,
             kind='translation_ru',
@@ -1869,7 +1869,7 @@ class ExerciseSystemEndToEndTests(APITestCase):
             order=0,
             learning_items=(LearningItemRef('memory_card', self.due_card.id, {'word_id': self.words[0].id, 'difficulty': 1}),),
         )
-        SubmitExerciseAnswerUseCase(spaced_repetition_service=FakeSpacedRepetitionService()).execute(
+        ExerciseSubmissionService(spaced_repetition_service=FakeSpacedRepetitionService()).execute(
             user=self.user,
             attempt_id=started.attempt.id,
             answer={'text': started.attempt.private_state['correct_answer']},

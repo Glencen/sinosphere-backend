@@ -4,7 +4,7 @@ from dictionary.models import Word
 
 from learning.models import ExerciseAttempt
 
-from ..base import ExerciseHandler
+from ..exercise_handler import ExerciseHandler
 from ..dto import ExerciseGenerationContext, GeneratedExercise, GradeResult, ItemGradeResult
 from ..exceptions import InvalidExerciseAnswerError, InvalidExerciseConfigError
 

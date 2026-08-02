@@ -15,23 +15,23 @@ from learning.exercises.exceptions import (
     ExerciseAttemptExpiredError,
 )
 from learning.exercises.registry import ExerciseHandlerRegistry, registry
-from learning.application.rating_policy import rating_policy_registry
-from learning.application.spaced_repetition import FSRSService
-from learning.application.events import build_exercise_submitted_event, publish_exercise_submitted
+from learning.practice.rating_policy import rating_policy_registry
+from learning.practice.spaced_repetition import FSRSService
+from learning.practice.events import build_exercise_submitted_event, publish_exercise_submitted
 
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class StartExerciseResult:
+class ExerciseAttemptCreationResult:
     attempt: ExerciseAttempt
     public_payload: dict
     metadata: dict
 
 
 @dataclass(frozen=True)
-class SubmitExerciseResult:
+class ExerciseSubmissionResult:
     attempt: ExerciseAttempt
     grade: GradeResult
     already_submitted: bool = False
@@ -61,11 +61,11 @@ class SubmitExerciseResult:
         }
 
 
-class StartExerciseUseCase:
+class ExerciseAttemptCreationService:
     def __init__(self, handler_registry: ExerciseHandlerRegistry = registry):
         self.registry = handler_registry
 
-    def execute(self, *, user, session, kind: str, config: dict, order: int, topic_id=None, word=None, position=None, learning_items=()) -> StartExerciseResult:
+    def execute(self, *, user, session, kind: str, config: dict, order: int, topic_id=None, word=None, position=None, learning_items=()) -> ExerciseAttemptCreationResult:
         handler = self.registry.get(kind, int(config.get('handler_version', 1)))
         handler.validate_config(config)
         generated = handler.generate(
@@ -110,7 +110,7 @@ class StartExerciseUseCase:
         attempt.public_payload = public_payload
         attempt.save(update_fields=['public_payload'])
         self._create_memory_card_links(attempt, learning_items or ())
-        return StartExerciseResult(attempt=attempt, public_payload=public_payload, metadata=generated.metadata)
+        return ExerciseAttemptCreationResult(attempt=attempt, public_payload=public_payload, metadata=generated.metadata)
 
     def _create_memory_card_links(self, attempt, learning_items):
         logger.info(
@@ -133,7 +133,7 @@ class StartExerciseUseCase:
             AttemptMemoryCard.objects.bulk_create(links)
 
 
-class SubmitExerciseAnswerUseCase:
+class ExerciseSubmissionService:
     def __init__(self, handler_registry: ExerciseHandlerRegistry = registry, spaced_repetition_service=None, rating_policies=None):
         self.registry = handler_registry
         self.spaced_repetition_service = spaced_repetition_service or FSRSService()
@@ -147,7 +147,7 @@ class SubmitExerciseAnswerUseCase:
         answer: Any,
         duration_ms: int | None = None,
         on_graded: Callable[[ExerciseAttempt, GradeResult], None] | None = None,
-    ) -> SubmitExerciseResult:
+    ) -> ExerciseSubmissionResult:
         pre_attempt = ExerciseAttempt.objects.select_related('session').get(id=attempt_id)
         if pre_attempt.user_id != user.id:
             raise ExerciseAttemptAccessDeniedError()
@@ -164,7 +164,7 @@ class SubmitExerciseAnswerUseCase:
 
             if attempt.status == ExerciseAttempt.STATUS_SUBMITTED or attempt.is_correct is not None:
                 logger.info('exercise_submit_idempotent attempt_id=%s user_id=%s', attempt.id, user.id)
-                return SubmitExerciseResult(
+                return ExerciseSubmissionResult(
                     attempt=attempt,
                     grade=self._grade_from_saved_attempt(attempt),
                     already_submitted=True,
@@ -197,7 +197,7 @@ class SubmitExerciseAnswerUseCase:
             event = build_exercise_submitted_event(attempt)
             transaction.on_commit(lambda event=event: publish_exercise_submitted(event))
             attempt.session.update_status_from_attempts()
-            return SubmitExerciseResult(attempt=attempt, grade=grade, already_submitted=False)
+            return ExerciseSubmissionResult(attempt=attempt, grade=grade, already_submitted=False)
 
     def _grade_from_saved_attempt(self, attempt: ExerciseAttempt) -> GradeResult:
         from learning.exercises.dto import ItemGradeResult

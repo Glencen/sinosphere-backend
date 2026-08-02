@@ -1,5 +1,5 @@
 from learning.exercises.dto import ExerciseSpec
-from learning.application.handler_versions import active_handler_version
+from learning.practice.handler_versions import active_handler_version
 
 
 class ExerciseComposer:

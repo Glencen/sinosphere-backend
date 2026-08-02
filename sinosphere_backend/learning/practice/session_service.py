@@ -9,10 +9,10 @@ from django.utils import timezone
 
 from learning.models import AttemptMemoryCard, ExerciseAttempt, PracticeSession
 from learning.exercises.registry import registry
-from learning.application.composer import ExerciseComposer
-from learning.application.planner import PracticeSessionPlanner
-from learning.application.selection_policy import ExerciseTypeSelectionPolicy
-from learning.application.use_cases import StartExerciseUseCase
+from learning.practice.composer import ExerciseComposer
+from learning.practice.planner import PracticeSessionPlanner
+from learning.practice.selection_policy import ExerciseTypeSelectionPolicy
+from learning.practice.attempt_service import ExerciseAttemptCreationService
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class PracticeSessionResult:
         return session_dto(self.session, first_attempt=self.first_attempt)
 
 
-class StartPracticeSessionUseCase:
+class PracticeSessionCreationService:
     def __init__(self, *, planner=None, composer=None, handler_registry=registry, rng=None):
         self.planner = planner or PracticeSessionPlanner()
         self.handler_registry = handler_registry
@@ -41,7 +41,7 @@ class StartPracticeSessionUseCase:
         self.composer = composer or ExerciseComposer(
             selection_policy=ExerciseTypeSelectionPolicy(handler_registry=handler_registry, rng=self.rng)
         )
-        self.start_exercise = StartExerciseUseCase(handler_registry=handler_registry)
+        self.attempt_creation = ExerciseAttemptCreationService(handler_registry=handler_registry)
 
     @transaction.atomic
     def execute(self, *, user, config):
@@ -77,7 +77,7 @@ class StartPracticeSessionUseCase:
 
         first_attempt = None
         for position, spec in enumerate(specs):
-            started = self.start_exercise.execute(
+            started = self.attempt_creation.execute(
                 user=user,
                 session=session,
                 kind=spec.kind,
@@ -106,7 +106,7 @@ class StartPracticeSessionUseCase:
         return PracticeSessionResult(session=session, first_attempt=first_attempt)
 
 
-class GetPracticeSessionUseCase:
+class PracticeSessionQueryService:
     def execute(self, *, user, session_id):
         session = PracticeSession.objects.prefetch_related('attempts').get(id=session_id, user=user)
         if session.is_expired:
@@ -114,7 +114,7 @@ class GetPracticeSessionUseCase:
         return session
 
 
-class GetCurrentExerciseUseCase:
+class CurrentExerciseService:
     def execute(self, *, user, session_id):
         session = PracticeSession.objects.get(id=session_id, user=user)
         if session.is_expired:
@@ -126,7 +126,7 @@ class GetCurrentExerciseUseCase:
         return session, attempt
 
 
-class GetPracticeSessionSummaryUseCase:
+class PracticeSessionSummaryService:
     def execute(self, *, user, session_id):
         session = PracticeSession.objects.prefetch_related('attempts').get(id=session_id, user=user)
         if session.is_expired:
