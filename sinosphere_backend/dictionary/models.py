@@ -3,10 +3,13 @@ from django.utils import timezone
 
 class Word(models.Model):
     hanzi = models.CharField(max_length=32, default='', verbose_name="Иероглифы")
+    traditional = models.CharField(max_length=32, default='', blank=True)
     pinyin_numeric = models.CharField(max_length=255, default='', verbose_name="Пиньинь с цифровым представлением тонов")
     pinyin_graphic = models.CharField(max_length=255, default='', verbose_name="Пиньинь с тональными символами")
     translation = models.TextField(default='', verbose_name="Перевод")
     difficulty = models.PositiveSmallIntegerField(default=0, verbose_name="Сложность слова по стандарту HSK (от 2021 года)")
+    frequency_rank = models.PositiveIntegerField(null=True, blank=True)
+    radical = models.CharField(max_length=32, default='', blank=True)
     
     class Meta:
         verbose_name = 'Слово'
@@ -14,11 +17,95 @@ class Word(models.Model):
         indexes = [
             models.Index(fields=['hanzi'], name='idx_word_hanzi'),
             models.Index(fields=['pinyin_numeric'], name='idx_word_pinyin_numeric'),
-            models.Index(fields=['difficulty'], name='idx_word_difficulty')
+            models.Index(fields=['difficulty'], name='idx_word_difficulty'),
+            models.Index(fields=['frequency_rank'], name='idx_word_frequency')
         ]
     
     def __str__(self):
         return f"{self.hanzi} ({self.pinyin_graphic})"
+
+
+class Translation(models.Model):
+    language = models.CharField(max_length=8, default='en')
+    text = models.CharField(max_length=255)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['language', 'text'],
+                name='unique_translation_language_text'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['language', 'text'], name='idx_translation_lang_text'),
+        ]
+
+    def __str__(self):
+        return f"{self.language}: {self.text}"
+
+
+class WordTranslation(models.Model):
+    word = models.ForeignKey(
+        Word,
+        on_delete=models.CASCADE,
+        related_name='word_translations'
+    )
+    translation = models.ForeignKey(
+        Translation,
+        on_delete=models.CASCADE,
+        related_name='word_links'
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+    is_primary = models.BooleanField(default=False)
+    source = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['word', 'order', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['word', 'translation'],
+                name='unique_word_translation'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['word', 'order'], name='idx_word_translation_order'),
+            models.Index(fields=['translation'], name='idx_word_translation_value'),
+        ]
+
+    def __str__(self):
+        return f"{self.word.hanzi} -> {self.translation.text}"
+
+
+class WordStructureType(models.Model):
+    slug = models.SlugField(max_length=64, unique=True)
+    name = models.CharField(max_length=128)
+    description = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ['slug']
+        indexes = [
+            models.Index(fields=['slug'], name='idx_word_structure_slug'),
+        ]
+
+    def __str__(self):
+        return self.name or self.slug
+
+
+class WordStructure(models.Model):
+    word = models.OneToOneField(
+        Word,
+        on_delete=models.CASCADE,
+        related_name='structure'
+    )
+    structure_type = models.ForeignKey(
+        WordStructureType,
+        on_delete=models.PROTECT,
+        related_name='word_structures'
+    )
+    description = models.TextField(blank=True, default='')
+
+    def __str__(self):
+        return f"{self.word.hanzi}: {self.structure_type.slug}"
 
 class WordComposition(models.Model):
     child_word = models.ForeignKey(
@@ -61,6 +148,7 @@ class WordComposition(models.Model):
         return f"Слово {self.child_word} содержит слово {self.parent_word} (позиция: {self.position})"
     
 class Topic(models.Model):
+    slug = models.SlugField(max_length=64, unique=True, null=True, blank=True)
     name = models.CharField(max_length=64, unique=True, verbose_name='Название темы')
     description = models.TextField(blank=True, verbose_name='Описание')
     parent_topic = models.ForeignKey(
@@ -106,6 +194,7 @@ class Topic(models.Model):
         return self.tags.all()
 
 class Tag(models.Model):
+    slug = models.SlugField(max_length=64, unique=True, null=True, blank=True)
     name = models.CharField(max_length=32, unique=True, verbose_name='Название тэга')
     topic = models.ForeignKey(
         Topic,
