@@ -294,6 +294,8 @@ class ExerciseAttempt(models.Model):
     kind = models.CharField(max_length=64, default='', blank=True)
     handler_version = models.PositiveIntegerField(default=1)
     order = models.PositiveSmallIntegerField(default=0)
+    position = models.PositiveIntegerField(default=0)
+    learning_items = models.JSONField(default=list, blank=True)
     public_payload = models.JSONField(default=dict)
     grading_payload = models.JSONField(default=dict)
     private_state = models.JSONField(default=dict, blank=True)
@@ -316,11 +318,16 @@ class ExerciseAttempt(models.Model):
             models.UniqueConstraint(
                 fields=['session', 'order'],
                 name='unique_session_attempt_order'
+            ),
+            models.UniqueConstraint(
+                fields=['session', 'position'],
+                name='unique_attempt_position_in_session'
             )
         ]
         indexes = [
             models.Index(fields=['user', 'is_correct'], name='idx_attempt_user_correct'),
             models.Index(fields=['session', 'order'], name='idx_attempt_session_order'),
+            models.Index(fields=['session', 'position'], name='idx_attempt_session_position'),
             models.Index(fields=['kind', 'handler_version'], name='idx_attempt_handler'),
             models.Index(fields=['user', 'status'], name='idx_attempt_user_status'),
         ]
