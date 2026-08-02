@@ -111,6 +111,28 @@ class TopicProgressSerializer(serializers.ModelSerializer):
         return 0
 
 
+class PracticeSessionCreateSerializer(serializers.Serializer):
+    topic_id = serializers.IntegerField(required=False, allow_null=True)
+    requested_cards_count = serializers.IntegerField(required=False, min_value=1, max_value=100)
+    count = serializers.IntegerField(required=False, min_value=1, max_value=100)
+    type = serializers.CharField(required=False, default='mixed')
+    exercise_types = serializers.ListField(child=serializers.CharField(), required=False)
+    allowed_types = serializers.ListField(child=serializers.CharField(), required=False)
+    includeReview = serializers.BooleanField(required=False, default=True)
+    includeNew = serializers.BooleanField(required=False, default=True)
+    include_review = serializers.BooleanField(required=False)
+    include_new = serializers.BooleanField(required=False)
+    expires_in_minutes = serializers.IntegerField(required=False, min_value=1, max_value=60 * 24 * 30)
+    rng_seed = serializers.IntegerField(required=False)
+    handler_config = serializers.DictField(required=False)
+
+
+class ExerciseAttemptSubmitSerializer(serializers.Serializer):
+    answer = serializers.JSONField(required=True)
+    duration_ms = serializers.IntegerField(required=False, min_value=0, allow_null=True)
+    time_spent = serializers.FloatField(required=False, min_value=0)
+
+
 class ExerciseSubmissionSerializer(serializers.Serializer):
     attempt_id = serializers.IntegerField(required=False)
     exercise_id = serializers.IntegerField(required=False)
