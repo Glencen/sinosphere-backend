@@ -1,10 +1,14 @@
-﻿from dataclasses import dataclass
+import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
 from django.utils import timezone
 
 from learning.models import FSRSSchedulerProfile, MemoryCard
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

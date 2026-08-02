@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Callable
@@ -16,6 +17,10 @@ from learning.exercises.exceptions import (
 from learning.exercises.registry import ExerciseHandlerRegistry, registry
 from learning.application.rating_policy import rating_policy_registry
 from learning.application.spaced_repetition import FSRSService
+from learning.application.events import build_exercise_submitted_event, publish_exercise_submitted
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,13 @@ class StartExerciseUseCase:
         return StartExerciseResult(attempt=attempt, public_payload=public_payload, metadata=generated.metadata)
 
     def _create_memory_card_links(self, attempt, learning_items):
+        logger.info(
+            'exercise_attempt_generated session_id=%s user_id=%s kind=%s attempt_id=%s',
+            attempt.session_id,
+            attempt.user_id,
+            attempt.kind or attempt.exercise_type,
+            attempt.id,
+        )
         links = []
         for position, item in enumerate(learning_items):
             if item.item_type != 'memory_card':
@@ -151,6 +163,7 @@ class SubmitExerciseAnswerUseCase:
                 raise ExerciseAttemptAccessDeniedError()
 
             if attempt.status == ExerciseAttempt.STATUS_SUBMITTED or attempt.is_correct is not None:
+                logger.info('exercise_submit_idempotent attempt_id=%s user_id=%s', attempt.id, user.id)
                 return SubmitExerciseResult(
                     attempt=attempt,
                     grade=self._grade_from_saved_attempt(attempt),
@@ -181,7 +194,8 @@ class SubmitExerciseAnswerUseCase:
                 on_graded(attempt, grade)
 
             self._review_memory_cards(attempt=attempt, grade=grade, duration_ms=duration_ms)
-            transaction.on_commit(lambda: None)
+            event = build_exercise_submitted_event(attempt)
+            transaction.on_commit(lambda event=event: publish_exercise_submitted(event))
             attempt.session.update_status_from_attempts()
             return SubmitExerciseResult(attempt=attempt, grade=grade, already_submitted=False)
 

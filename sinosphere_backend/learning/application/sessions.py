@@ -1,4 +1,5 @@
-﻿import random
+import logging
+import random
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -11,6 +12,9 @@ from learning.application.composer import ExerciseComposer
 from learning.application.planner import PracticeSessionPlanner
 from learning.application.selection_policy import ExerciseTypeSelectionPolicy
 from learning.application.use_cases import StartExerciseUseCase
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,7 @@ class StartPracticeSessionUseCase:
         include_new = config.get('includeNew', config.get('include_new', True))
         expires_in_minutes = int(config.get('expires_in_minutes') or 24 * 60)
 
+        logger.info('practice_session_create_requested user_id=%s requested_cards_count=%s topic_id=%s', user.id, requested_cards_count, topic_id)
         session = PracticeSession.objects.create(
             user=user,
             topic_id=topic_id or None,
@@ -91,6 +96,7 @@ class StartPracticeSessionUseCase:
         else:
             session.save(update_fields=['generated_exercises_count'])
 
+        logger.info('practice_session_created session_id=%s user_id=%s learning_items=%s visual_exercises=%s', session.id, user.id, requested_cards_count, session.generated_exercises_count)
         return PracticeSessionResult(session=session, first_attempt=first_attempt)
 
 

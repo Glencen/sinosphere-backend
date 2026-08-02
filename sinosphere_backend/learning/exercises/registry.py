@@ -1,5 +1,10 @@
-﻿from .base import ExerciseHandler
+import logging
+
+from .base import ExerciseHandler
 from .exceptions import UnknownExerciseHandlerError
+
+
+logger = logging.getLogger(__name__)
 
 
 class ExerciseHandlerRegistry:
