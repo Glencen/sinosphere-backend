@@ -18,13 +18,18 @@ from users.models import UserWord, UserLearningStats, UserTopicProgress, UserExe
 from .serializers import (
     LessonSerializer, ExerciseSerializer, UserLessonProgressSerializer,
     DailyGoalSerializer, TopicProgressSerializer, LearningStatsSerializer,
-    ExerciseSubmissionSerializer, GeneratedExerciseSerializer
+    ExerciseSubmissionSerializer, GeneratedExerciseSerializer,
+    PracticeSessionCreateSerializer, ExerciseAttemptSubmitSerializer
 )
 from .exercise_generator import ExerciseGenerator
 from .fsrs_optimizer import FSRSOptimizer
 from .application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
+from .application.sessions import (
+    GetCurrentExerciseUseCase, GetPracticeSessionUseCase,
+    StartPracticeSessionUseCase, public_attempt_payload, session_dto, session_progress
+)
 from .exercises import registry as exercise_handler_registry
-from .exercises.exceptions import ExerciseAttemptAccessDeniedError, InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
+from .exercises.exceptions import ExerciseAttemptAccessDeniedError, ExerciseAttemptExpiredError, InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
 
 
 ANSWER_FIELDS = {'correct_answer', 'correct_index', 'correct_pairs'}
@@ -293,7 +298,7 @@ class SubmitExerciseView(APIView):
         )
 
         kind = attempt.kind or attempt.exercise_type
-        handler_version = attempt.handler_version or 1
+        handler_version = attempt.handler_version if attempt.handler_version is not None else 1
         if exercise_handler_registry.has(kind, handler_version):
             return self._submit_attempt_with_handler(user, data)
 
@@ -321,6 +326,8 @@ class SubmitExerciseView(APIView):
             return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
         except ExerciseAttemptAccessDeniedError:
             return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except ExerciseAttemptExpiredError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_410_GONE)
         except (InvalidExerciseAnswerError, InvalidExerciseConfigError) as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except UnknownExerciseHandlerError as exc:
@@ -962,6 +969,16 @@ class PracticeSessionView(APIView):
             topic=topic,
             session_type=session_type,
             requested_count=count,
+            requested_cards_count=count,
+            status=PracticeSession.STATUS_IN_PROGRESS,
+            generation_config={
+                'topic_id': topic_id,
+                'type': session_type,
+                'count': count,
+                'exercise_types': exercise_types,
+                'includeReview': include_review,
+                'includeNew': include_new,
+            },
             settings={
                 'topic_id': topic_id,
                 'type': session_type,
@@ -1016,6 +1033,7 @@ class PracticeSessionView(APIView):
                     kind=exercise.get('type') or exercise_type or 'translation_ru',
                     handler_version=1,
                     order=len(exercises),
+                    position=len(exercises),
                     public_payload={},
                     grading_payload=_grading_payload(exercise),
                     private_state=_grading_payload(exercise)
@@ -1031,6 +1049,9 @@ class PracticeSessionView(APIView):
 
                 exercises.append(public_payload)
         
+        session.generated_exercises_count = len(exercises)
+        session.save(update_fields=['generated_exercises_count'])
+
         return Response({
             'session_id': session.id,
             'exercises': exercises,
@@ -1168,3 +1189,87 @@ class LearningDashboardView(APIView):
                 learned_words_count += 1
         
         return learned_words_count
+
+
+class PracticeSessionCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = PracticeSessionCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        config = dict(serializer.validated_data)
+        rng_seed = config.pop('rng_seed', None)
+        rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
+
+        try:
+            result = StartPracticeSessionUseCase(rng=rng).execute(user=request.user, config=config)
+        except (InvalidExerciseConfigError, UnknownExerciseHandlerError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result.dto, status=status.HTTP_201_CREATED)
+
+
+class PracticeSessionApiDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        try:
+            session = GetPracticeSessionUseCase().execute(user=request.user, session_id=session_id)
+        except PracticeSession.DoesNotExist:
+            return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(session_dto(session))
+
+
+class PracticeSessionCurrentExerciseView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, session_id):
+        try:
+            session, attempt = GetCurrentExerciseUseCase().execute(user=request.user, session_id=session_id)
+        except PracticeSession.DoesNotExist:
+            return Response({'error': 'Practice session not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            'session_id': session.id,
+            'status': session.status,
+            'current_exercise': public_attempt_payload(attempt),
+            'progress': session_progress(session),
+        })
+
+
+class ExerciseAttemptSubmitView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, attempt_id):
+        serializer = ExerciseAttemptSubmitSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        duration_ms = data.get('duration_ms')
+        if duration_ms is None and data.get('time_spent') is not None:
+            duration_ms = int(data['time_spent'] * 1000)
+
+        try:
+            result = SubmitExerciseAnswerUseCase().execute(
+                user=request.user,
+                attempt_id=attempt_id,
+                answer=data['answer'],
+                duration_ms=duration_ms,
+            )
+        except ExerciseAttempt.DoesNotExist:
+            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except ExerciseAttemptAccessDeniedError:
+            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except ExerciseAttemptExpiredError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_410_GONE)
+        except (InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        payload = result.dto
+        payload['session_status'] = result.attempt.session.status
+        payload['progress'] = session_progress(result.attempt.session)
+        return Response(payload)
