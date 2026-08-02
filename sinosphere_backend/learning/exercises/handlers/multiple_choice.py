@@ -47,6 +47,7 @@ class MultipleChoiceHandler(ExerciseHandler):
         }
         private_state = {
             'word_id': word.id,
+            'memory_card_id': context.learning_items[0].item_id if context.learning_items else None,
             'options': options,
             'correct_index': correct_index,
             'correct_answer': correct_translation,
@@ -55,7 +56,7 @@ class MultipleChoiceHandler(ExerciseHandler):
         metadata = {
             'kind': self.kind,
             'handler_version': self.version,
-            'source_item_ids': [word.id],
+            'source_item_ids': [context.learning_items[0].item_id] if context.learning_items else [word.id],
         }
         return GeneratedExercise(public_payload, private_state, metadata)
 
@@ -80,7 +81,7 @@ class MultipleChoiceHandler(ExerciseHandler):
 
         score = 1.0 if is_correct else 0.0
         item_result = ItemGradeResult(
-            source_item_id=private_state.get('word_id') or attempt.word_id or attempt.id,
+            source_item_id=private_state.get('memory_card_id') or private_state.get('word_id') or attempt.word_id or attempt.id,
             is_correct=is_correct,
             score=score,
         )
@@ -111,7 +112,9 @@ class MultipleChoiceHandler(ExerciseHandler):
 
     def _select_word(self, context: ExerciseGenerationContext):
         if context.learning_items:
-            word = Word.objects.filter(id=context.learning_items[0].item_id).first()
+            item = context.learning_items[0]
+            word_id = item.payload.get('word_id') or item.item_id
+            word = Word.objects.filter(id=word_id).first()
             if word:
                 return word
         query = Word.objects.all()

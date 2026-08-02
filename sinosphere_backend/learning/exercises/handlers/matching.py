@@ -1,4 +1,4 @@
-﻿from dictionary.models import Word
+from dictionary.models import Word
 
 from learning.models import ExerciseAttempt
 
@@ -64,6 +64,7 @@ class MatchingHandler(ExerciseHandler):
         }
         private_state = {
             'word_ids': [word.id for word in words],
+            'memory_card_ids': [item.item_id for item in context.learning_items] if context.learning_items else [word.id for word in words],
             'pairs': pairs,
             'accepted_translations': [_normalize(pair['translation']) for pair in pairs],
             'normalization': 'ordered_strip_lower',
@@ -71,7 +72,7 @@ class MatchingHandler(ExerciseHandler):
         metadata = {
             'kind': self.kind,
             'handler_version': self.version,
-            'source_item_ids': [word.id for word in words],
+            'source_item_ids': [item.item_id for item in context.learning_items] if context.learning_items else [word.id for word in words],
         }
         return GeneratedExercise(public_payload, private_state, metadata)
 
@@ -85,6 +86,7 @@ class MatchingHandler(ExerciseHandler):
         private_state = attempt.private_state or attempt.grading_payload or {}
         expected = private_state.get('accepted_translations') or []
         word_ids = private_state.get('word_ids') or []
+        memory_card_ids = private_state.get('memory_card_ids') or word_ids
         pairs = private_state.get('pairs') or []
         submitted = [_normalize(item) for item in values]
 
@@ -93,7 +95,7 @@ class MatchingHandler(ExerciseHandler):
             actual = submitted[index] if index < len(submitted) else ''
             is_correct = actual == expected_value
             item_results.append(ItemGradeResult(
-                source_item_id=word_ids[index] if index < len(word_ids) else index,
+                source_item_id=memory_card_ids[index] if index < len(memory_card_ids) else index,
                 is_correct=is_correct,
                 score=1.0 if is_correct else 0.0,
             ))
@@ -118,7 +120,7 @@ class MatchingHandler(ExerciseHandler):
 
     def _words_from_context(self, context: ExerciseGenerationContext):
         if context.learning_items:
-            ids = [item.item_id for item in context.learning_items]
+            ids = [item.payload.get('word_id') or item.item_id for item in context.learning_items]
             words_by_id = {word.id: word for word in Word.objects.filter(id__in=ids)}
             return [words_by_id[item_id] for item_id in ids if item_id in words_by_id]
         if context.word:

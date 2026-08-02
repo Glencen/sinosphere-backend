@@ -1,4 +1,4 @@
-﻿from dictionary.models import Word
+from dictionary.models import Word
 
 from learning.models import ExerciseAttempt
 
@@ -44,6 +44,7 @@ class TranslationRuHandler(ExerciseHandler):
         }
         private_state = {
             'word_id': word.id,
+            'memory_card_id': context.learning_items[0].item_id if context.learning_items else None,
             'accepted_answers': [_normalize(item) for item in translations],
             'correct_answer': correct_answer,
             'normalization': 'strip_lower',
@@ -51,7 +52,7 @@ class TranslationRuHandler(ExerciseHandler):
         metadata = {
             'kind': self.kind,
             'handler_version': self.version,
-            'source_item_ids': [word.id],
+            'source_item_ids': [context.learning_items[0].item_id] if context.learning_items else [word.id],
         }
         return GeneratedExercise(public_payload, private_state, metadata)
 
@@ -74,7 +75,7 @@ class TranslationRuHandler(ExerciseHandler):
         is_correct = _normalize(value) in accepted
         score = 1.0 if is_correct else 0.0
         item = ItemGradeResult(
-            source_item_id=private_state.get('word_id') or attempt.word_id or attempt.id,
+            source_item_id=private_state.get('memory_card_id') or private_state.get('word_id') or attempt.word_id or attempt.id,
             is_correct=is_correct,
             score=score,
         )
@@ -90,5 +91,6 @@ class TranslationRuHandler(ExerciseHandler):
 
     def _word_from_items(self, context):
         if context.learning_items:
-            return Word.objects.filter(id=context.learning_items[0].item_id).first()
+            item = context.learning_items[0]
+            return Word.objects.filter(id=item.payload.get('word_id') or item.item_id).first()
         return None
