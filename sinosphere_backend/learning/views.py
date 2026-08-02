@@ -22,6 +22,9 @@ from .serializers import (
 )
 from .exercise_generator import ExerciseGenerator
 from .fsrs_optimizer import FSRSOptimizer
+from .application.use_cases import StartExerciseUseCase, SubmitExerciseAnswerUseCase
+from .exercises import registry as exercise_handler_registry
+from .exercises.exceptions import ExerciseAttemptAccessDeniedError, InvalidExerciseAnswerError, InvalidExerciseConfigError, UnknownExerciseHandlerError
 
 
 ANSWER_FIELDS = {'correct_answer', 'correct_index', 'correct_pairs'}
@@ -283,8 +286,94 @@ class SubmitExerciseView(APIView):
             'consecutive_correct': user_word.consecutive_correct
         })
     
-    @transaction.atomic
     def _submit_attempt(self, user, data):
+        attempt = get_object_or_404(
+            ExerciseAttempt.objects.select_related('session', 'word'),
+            id=data['attempt_id']
+        )
+
+        kind = attempt.kind or attempt.exercise_type
+        handler_version = attempt.handler_version or 1
+        if exercise_handler_registry.has(kind, handler_version):
+            return self._submit_attempt_with_handler(user, data)
+
+        return self._submit_attempt_legacy(user, data)
+
+    def _submit_attempt_with_handler(self, user, data):
+        response_time = data.get('time_spent', 0)
+        duration_ms = int(response_time * 1000) if response_time is not None else None
+        use_case = SubmitExerciseAnswerUseCase()
+
+        try:
+            result = use_case.execute(
+                user=user,
+                attempt_id=data['attempt_id'],
+                answer=data['answer'],
+                duration_ms=duration_ms,
+                on_graded=lambda attempt, grade: self._apply_learning_progress(
+                    user=user,
+                    attempt=attempt,
+                    is_correct=grade.is_fully_correct,
+                    response_time=response_time,
+                ),
+            )
+        except ExerciseAttempt.DoesNotExist:
+            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except ExerciseAttemptAccessDeniedError:
+            return Response({'error': 'Exercise attempt not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except (InvalidExerciseAnswerError, InvalidExerciseConfigError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except UnknownExerciseHandlerError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        attempt = result.attempt
+        user_word = UserWord.objects.filter(user=user, word=attempt.word).first() if attempt.word else None
+        payload = result.dto
+        payload.update({
+            'rating': attempt.rating,
+            'next_review': user_word.due if user_word else None,
+            'mastery_score': user_word.mastery_score if user_word else 0,
+            'xp_earned': 15 if result.grade.is_fully_correct else 5,
+            'is_learned': user_word.is_learned if user_word else False,
+            'consecutive_correct': user_word.consecutive_correct if user_word else 0,
+        })
+        return Response(payload)
+
+    def _apply_learning_progress(self, user, attempt, is_correct, response_time):
+        word = attempt.word
+        if not word:
+            return
+
+        user_word, created = UserWord.objects.get_or_create(
+            user=user,
+            word=word,
+            defaults={
+                'due': timezone.now(),
+                'state': 0,
+                'difficulty': 8.0,
+            }
+        )
+
+        rating = user_word.update_review(is_correct, response_time, attempt.exercise_type)
+
+        UserExerciseHistory.objects.create(
+            user=user,
+            exercise_type=attempt.exercise_type,
+            word=word,
+            is_correct=is_correct,
+            time_spent=response_time,
+            difficulty=word.difficulty
+        )
+
+        attempt.rating = rating
+        attempt.save(update_fields=['rating'])
+
+        self._update_daily_goal(user, response_time, xp=15 if is_correct else 5)
+        self._update_learning_stats(user, is_correct, response_time)
+        self._update_topic_progress(user, word, is_correct)
+
+    @transaction.atomic
+    def _submit_attempt_legacy(self, user, data):
         attempt = get_object_or_404(
             ExerciseAttempt.objects.select_related('session', 'word'),
             id=data['attempt_id'],
@@ -896,6 +985,23 @@ class PracticeSessionView(APIView):
             else:
                 exercise_type = None
             
+            if exercise_type and exercise_handler_registry.has(exercise_type, 1):
+                try:
+                    started = StartExerciseUseCase().execute(
+                        user=request.user,
+                        session=session,
+                        kind=exercise_type,
+                        config={'handler_version': 1},
+                        order=len(exercises),
+                        topic_id=topic_id,
+                    )
+                    if started.attempt.word and session_type != 'review':
+                        generator.auto_add_word_to_dictionary(started.attempt.word)
+                    exercises.append(started.public_payload)
+                    continue
+                except (InvalidExerciseConfigError, UnknownExerciseHandlerError):
+                    pass
+
             exercise = generator.get_next_exercise(exercise_type)
             if exercise:
                 if 'word_id' in exercise and session_type != 'review':
@@ -907,9 +1013,12 @@ class PracticeSessionView(APIView):
                     user=request.user,
                     word_id=exercise.get('word_id') or None,
                     exercise_type=exercise.get('type') or exercise_type or 'translation_ru',
+                    kind=exercise.get('type') or exercise_type or 'translation_ru',
+                    handler_version=1,
                     order=len(exercises),
                     public_payload={},
-                    grading_payload=_grading_payload(exercise)
+                    grading_payload=_grading_payload(exercise),
+                    private_state=_grading_payload(exercise)
                 )
 
                 public_payload = _public_exercise_payload(
