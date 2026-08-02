@@ -45,18 +45,18 @@ class StartPracticeSessionUseCase:
 
     @transaction.atomic
     def execute(self, *, user, config):
-        requested_cards_count = max(1, min(int(config.get('requested_cards_count') or config.get('count') or 10), 100))
+        requested_cards_count = max(1, min(int(config.get('requested_cards_count') or 10), 100))
         topic_id = config.get('topic_id')
-        allowed_types = tuple(config.get('exercise_types') or config.get('allowed_types') or ()) or None
-        include_review = config.get('includeReview', config.get('include_review', True))
-        include_new = config.get('includeNew', config.get('include_new', True))
+        allowed_types = tuple(config.get('allowed_types') or ()) or None
+        include_review = config.get('include_review', True)
+        include_new = config.get('include_new', True)
         expires_in_minutes = int(config.get('expires_in_minutes') or 24 * 60)
 
         logger.info('practice_session_create_requested user_id=%s requested_cards_count=%s topic_id=%s', user.id, requested_cards_count, topic_id)
         session = PracticeSession.objects.create(
             user=user,
             topic_id=topic_id or None,
-            session_type=config.get('type', 'mixed'),
+            session_type='mixed',
             requested_count=requested_cards_count,
             requested_cards_count=requested_cards_count,
             generation_config=config,
