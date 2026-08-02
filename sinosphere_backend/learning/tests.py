@@ -1732,6 +1732,98 @@ class PracticeSessionSummaryApiTests(APITestCase):
             GetPracticeSessionSummaryUseCase().execute(user=self.user, session_id=session.id)
 
 
+class ExerciseAttemptResultApiTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='result-user', password='pass12345')
+        self.other_user = User.objects.create_user(username='result-other', password='pass12345')
+        self.word = Word.objects.create(
+            hanzi='r',
+            pinyin_numeric='r',
+            pinyin_graphic='r',
+            translation='result',
+            difficulty=1,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.session = PracticeSession.objects.create(
+            user=self.user,
+            status=PracticeSession.STATUS_IN_PROGRESS,
+            requested_cards_count=1,
+            generated_exercises_count=1,
+        )
+
+    def test_result_submitted_attempt(self):
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type='translation_ru',
+            kind='translation_ru',
+            handler_version=1,
+            status=ExerciseAttempt.STATUS_SUBMITTED,
+            is_correct=True,
+            score=Decimal('1.0'),
+            submitted_at=timezone.now(),
+            result={
+                'score': 1.0,
+                'is_fully_correct': True,
+                'item_results': [{'source_item_id': self.word.id, 'is_correct': True, 'score': 1.0}],
+                'feedback': {'correct_answer': 'result', 'explanation': 'Good'},
+            },
+            private_state={'accepted_answers': ['result']},
+        )
+
+        response = self.client.get(f'/api/exercise-attempts/{attempt.id}/result/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['attempt_id'], attempt.id)
+        self.assertEqual(response.data['status'], ExerciseAttempt.STATUS_SUBMITTED)
+        self.assertTrue(response.data['is_correct'])
+        self.assertEqual(response.data['correct_answer'], 'result')
+        self.assertEqual(response.data['explanation'], 'Good')
+        self.assertEqual(len(response.data['item_results']), 1)
+        self.assertIn('progress', response.data)
+        self.assertNotIn('private_state', response.data)
+        self.assertNotIn('fsrs_state', response.data)
+        self.assertNotIn('memory_card_id', response.data)
+
+    def test_result_pending_attempt_does_not_expose_feedback(self):
+        attempt = ExerciseAttempt.objects.create(
+            session=self.session,
+            user=self.user,
+            word=self.word,
+            exercise_type='translation_ru',
+            kind='translation_ru',
+            handler_version=1,
+            status=ExerciseAttempt.STATUS_PENDING,
+            private_state={'correct_answer': 'secret'},
+        )
+
+        response = self.client.get(f'/api/exercise-attempts/{attempt.id}/result/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], ExerciseAttempt.STATUS_PENDING)
+        self.assertNotIn('is_correct', response.data)
+        self.assertNotIn('correct_answer', response.data)
+        self.assertNotIn('explanation', response.data)
+        self.assertNotIn('item_results', response.data)
+
+    def test_result_access_denied_and_not_found(self):
+        other_session = PracticeSession.objects.create(user=self.other_user)
+        other_attempt = ExerciseAttempt.objects.create(
+            session=other_session,
+            user=self.other_user,
+            exercise_type='translation_ru',
+            kind='translation_ru',
+        )
+
+        missing_response = self.client.get('/api/exercise-attempts/999999/result/')
+        denied_response = self.client.get(f'/api/exercise-attempts/{other_attempt.id}/result/')
+
+        self.assertEqual(missing_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(denied_response.status_code, status.HTTP_404_NOT_FOUND)
+
+
 class ExerciseSystemEndToEndTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='e2e-user', password='pass12345')
