@@ -15,6 +15,11 @@ from learning.application.use_cases import StartExerciseUseCase
 
 
 logger = logging.getLogger(__name__)
+TERMINAL_SESSION_STATUSES = {
+    PracticeSession.STATUS_COMPLETED,
+    PracticeSession.STATUS_EXPIRED,
+    PracticeSession.STATUS_ABANDONED,
+}
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,8 @@ class GetCurrentExerciseUseCase:
         if session.is_expired:
             session.mark_expired()
             return session, None
+        if session.status in TERMINAL_SESSION_STATUSES:
+            return session, None
         attempt = session.attempts.filter(is_correct__isnull=True).order_by('position', 'order').first()
         return session, attempt
 
@@ -144,7 +151,10 @@ def public_attempt_payload(attempt):
 
 
 def session_dto(session, *, first_attempt=None):
-    current = first_attempt or session.attempts.filter(is_correct__isnull=True).order_by('position', 'order').first()
+    if session.status in TERMINAL_SESSION_STATUSES:
+        current = None
+    else:
+        current = first_attempt or session.attempts.filter(is_correct__isnull=True).order_by('position', 'order').first()
     return {
         'session_id': session.id,
         'status': session.status,
