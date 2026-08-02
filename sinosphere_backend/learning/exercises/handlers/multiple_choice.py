@@ -1,4 +1,4 @@
-﻿import random
+import random
 
 from dictionary.models import Word
 
@@ -110,6 +110,10 @@ class MultipleChoiceHandler(ExerciseHandler):
         return selected_index
 
     def _select_word(self, context: ExerciseGenerationContext):
+        if context.learning_items:
+            word = Word.objects.filter(id=context.learning_items[0].item_id).first()
+            if word:
+                return word
         query = Word.objects.all()
         if context.topic_id:
             query = query.filter(word_tags__tag__topic_id=context.topic_id).distinct()
