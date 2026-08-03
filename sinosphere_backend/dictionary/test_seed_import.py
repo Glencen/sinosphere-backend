@@ -9,6 +9,7 @@ from django.test import TestCase
 from dictionary.models import (
     ExampleSentence,
     PartOfSpeech,
+    Tag,
     Translation,
     Word,
     WordComposition,
@@ -97,6 +98,27 @@ class DictionarySeedImportTests(TestCase):
         self.assertEqual(WordComposition.objects.filter(child_word=word).count(), 2)
         self.assertEqual(WordStructure.objects.filter(word=word).count(), 1)
         self.assertEqual(WordStructureType.objects.filter(slug='left-right').count(), 1)
+
+    def test_dictionary_seed_import_uses_unique_slugs_for_radical_tags(self):
+        path = self._seed_file([
+            {
+                'simplified': 'з€±',
+                'pinyin_numeric': 'ai4',
+                'translations': ['to love'],
+                'tags': {'radical': 'з€«'},
+            },
+            {
+                'simplified': 'еҐЅ',
+                'pinyin_numeric': 'hao3',
+                'translations': ['good'],
+                'tags': {'radical': 'еҐі'},
+            },
+        ])
+
+        call_command('import_dictionary_seed', str(path), stdout=StringIO())
+
+        self.assertEqual(Tag.objects.filter(name__startswith='radical:').count(), 2)
+        self.assertEqual(Tag.objects.filter(slug__startswith='radical-').count(), 2)
 
     def _seed_file(self, payload):
         directory = TemporaryDirectory()

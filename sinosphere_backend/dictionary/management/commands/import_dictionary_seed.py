@@ -1,5 +1,6 @@
 import json
 import re
+from hashlib import sha1
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -284,15 +285,37 @@ class Command(BaseCommand):
         hsk = raw_tags.get('hsk') or {}
         for version, value in hsk.items():
             if value:
-                names.append(f'hsk:{version}:{value}')
+                names.append({
+                    'name': f'hsk:{version}:{value}',
+                    'slug': slugify(f'hsk-{version}-{value}')[:64],
+                })
         radical = raw_tags.get('radical')
         if radical:
-            names.append(f'radical:{radical}')
+            names.append({
+                'name': f'radical:{radical}',
+                'slug': self._radical_tag_slug(radical),
+            })
 
-        for name in names:
-            tag, created = Tag.objects.get_or_create(
-                name=name,
-                defaults={'slug': slugify(name)[:64] or None},
-            )
+        for data in names:
+            tag, created = self._sync_tag(data['slug'], data['name'])
             stats['tags'] += int(created)
             WordTag.objects.get_or_create(word=word, tag=tag)
+
+    def _radical_tag_slug(self, radical):
+        digest = sha1(str(radical).encode('utf-8')).hexdigest()[:12]
+        return f'radical-{digest}'
+
+    def _sync_tag(self, slug, name):
+        tag = Tag.objects.filter(slug=slug).first() or Tag.objects.filter(name=name[:32]).first()
+        if tag:
+            changed = False
+            if tag.slug != slug:
+                tag.slug = slug
+                changed = True
+            if tag.name != name[:32]:
+                tag.name = name[:32]
+                changed = True
+            if changed:
+                tag.save(update_fields=['slug', 'name'])
+            return tag, False
+        return Tag.objects.create(slug=slug, name=name[:32]), True
