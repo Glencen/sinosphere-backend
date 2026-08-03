@@ -158,7 +158,12 @@ class ExerciseSubmissionService:
             raise ExerciseAttemptExpiredError()
 
         with transaction.atomic():
-            attempt = ExerciseAttempt.objects.select_for_update().select_related('session', 'word').get(id=attempt_id)
+            attempt = (
+                ExerciseAttempt.objects
+                .select_for_update(of=('self',))
+                .select_related('session')
+                .get(id=attempt_id)
+            )
             if attempt.user_id != user.id:
                 raise ExerciseAttemptAccessDeniedError()
 

@@ -1087,6 +1087,41 @@ class MemoryCardFSRSIntegrationTests(APITestCase):
         self.assertEqual(review.scheduler_version, 'fake-fsrs')
         self.assertEqual(review.parameter_set_version, 7)
 
+    def test_submit_translation_cn_without_word_fk_returns_grade(self):
+        session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
+        attempt = ExerciseAttempt.objects.create(
+            session=session,
+            user=self.user,
+            word=None,
+            exercise_type='translation_cn',
+            kind='translation_cn',
+            handler_version=1,
+            order=0,
+            position=0,
+            private_state={
+                'accepted_answers': ['不客气'],
+                'correct_answer': '不客气',
+                'word_id': self.words[0].id,
+            },
+            grading_payload={
+                'accepted_answers': ['不客气'],
+                'correct_answer': '不客气',
+                'word_id': self.words[0].id,
+            },
+        )
+
+        result = ExerciseSubmissionService(spaced_repetition_service=FakeSpacedRepetitionService()).execute(
+            user=self.user,
+            attempt_id=attempt.id,
+            answer={'text': 'bu keqi'},
+            duration_ms=1200,
+        )
+
+        attempt.refresh_from_db()
+        self.assertFalse(result.grade.is_fully_correct)
+        self.assertEqual(attempt.status, ExerciseAttempt.STATUS_SUBMITTED)
+        self.assertEqual(attempt.result['feedback']['correct_answer'], '不客气')
+
     def test_matching_updates_each_memory_card_independently(self):
         cards = [self._card(word) for word in self.words[:4]]
         session = PracticeSession.objects.create(user=self.user, status=PracticeSession.STATUS_IN_PROGRESS)
